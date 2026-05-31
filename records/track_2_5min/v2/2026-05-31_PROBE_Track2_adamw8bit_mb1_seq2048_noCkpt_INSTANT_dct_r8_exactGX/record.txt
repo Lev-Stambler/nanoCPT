@@ -1,0 +1,21 @@
+Track 2 (5min)
+Description: PROBE Track2 adamw8bit mb1 seq2048 noCkpt INSTANT dct r8 exactGX
+Contributors: @levstamb
+Date: 2026-05-31
+Data mode: cpt
+Loss mask: all_tokens
+Eval mode: leading_docs
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 1.0
+Eval loss drop: 0.637057
+Baseline eval loss: 1.171663
+Final eval loss: 0.534606
+Steps: 182
+Tokens: 372,736
+Supervised tokens: 372,554
+Eval supervised tokens: 32,768
+Compile + warmup (untimed): 230.6s
+Elapsed budget: 60.2s
+Budget tokens/sec: 6192
+Train-loop elapsed: 60.2s
+Train-loop tokens/sec: 6192

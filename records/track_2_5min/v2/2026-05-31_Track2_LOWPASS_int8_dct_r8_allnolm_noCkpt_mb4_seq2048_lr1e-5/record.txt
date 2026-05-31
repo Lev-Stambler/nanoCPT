@@ -1,0 +1,21 @@
+Track 2 (5min)
+Description: Track2 LOWPASS int8 dct r8 allnolm noCkpt mb4 seq2048 lr1e-5
+Contributors:
+Date: 2026-05-31
+Data mode: cpt
+Loss mask: all_tokens
+Eval mode: leading_docs
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 5.0
+Eval loss drop: 0.677702
+Baseline eval loss: 1.098637
+Final eval loss: 0.420934
+Steps: 549
+Tokens: 4,497,408
+Supervised tokens: 4,495,212
+Eval supervised tokens: 131,072
+Compile + warmup (untimed): 289.9s
+Elapsed budget: 300.2s
+Budget tokens/sec: 14982
+Train-loop elapsed: 300.2s
+Train-loop tokens/sec: 14982

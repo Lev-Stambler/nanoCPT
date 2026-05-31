@@ -1,0 +1,21 @@
+Track 2 (5min)
+Description: Track2 pure Muon baseline mbs=4 ga=2 muonLR=2e-4 WSD seed1337
+Contributors:
+Date: 2026-05-31
+Data mode: cpt
+Loss mask: all_tokens
+Eval mode: leading_docs
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 5.0
+Eval loss drop: 0.664761
+Baseline eval loss: 1.021390
+Final eval loss: 0.356629
+Steps: 95
+Tokens: 3,112,960
+Supervised tokens: 3,112,200
+Eval supervised tokens: 262,144
+Compile + warmup (untimed): 301.4s
+Elapsed budget: 302.5s
+Budget tokens/sec: 10290
+Train-loop elapsed: 302.5s
+Train-loop tokens/sec: 10290

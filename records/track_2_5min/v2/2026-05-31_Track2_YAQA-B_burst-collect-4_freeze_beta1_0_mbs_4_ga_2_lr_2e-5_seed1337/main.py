@@ -286,6 +286,7 @@ image = (
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
             "TOKENIZERS_PARALLELISM": "true",
             "TORCH_CUDA_ARCH_LIST": "9.0",
+            "YAQAMUON_BUILD": "1",
         }
     )
     .apt_install("build-essential", "git", "ninja-build")

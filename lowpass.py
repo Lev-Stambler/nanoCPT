@@ -33,6 +33,7 @@ convention: don't stack the two when measuring.
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -64,6 +65,7 @@ class LowpassConfig:
     store_calibration_on_cpu: bool = True
     exact_input_grad: bool = False
     compress_gradients: bool = True
+    activation_storage: str = "float"
     enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -71,6 +73,8 @@ class LowpassConfig:
             raise ValueError(f"unknown max_rank_policy {self.max_rank_policy!r}")
         if self.projector_kind not in {"svd", "dct", "hadamard", "haar", "random"}:
             raise ValueError(f"unknown projector_kind {self.projector_kind!r}")
+        if self.activation_storage not in {"float", "int8"}:
+            raise ValueError(f"unknown activation_storage {self.activation_storage!r}")
         if self.min_rank < 1:
             raise ValueError("min_rank must be >= 1")
         if self.max_rank < 1:
@@ -200,6 +204,39 @@ def _torch_is_compiling() -> bool:
     return False
 
 
+def _triton_disabled() -> bool:
+    return os.environ.get("LOWPASS_DISABLE_TRITON", "0") == "1" or os.environ.get(
+        "INSTANT_DISABLE_TRITON", "0"
+    ) == "1"
+
+
+def _quantize_symmetric_int8(x: Tensor) -> tuple[Tensor, Tensor]:
+    scale = x.float().abs().amax(dim=-1, keepdim=True).div(127.0)
+    scale = scale.clamp_min(torch.finfo(torch.float32).tiny)
+    q = x.float().div(scale).round().clamp_(-127, 127).to(torch.int8)
+    return q.contiguous(), scale.contiguous()
+
+
+def _dequantize_symmetric_int8(q: Tensor, scale: Tensor, dtype: torch.dtype) -> Tensor:
+    scale_work = scale.to(dtype)
+    if scale_work.shape[-1] != 1:
+        block_size = math.ceil(q.shape[-1] / scale_work.shape[-1])
+        scale_work = scale_work.repeat_interleave(block_size, dim=-1)[..., : q.shape[-1]]
+    return q.to(dtype).mul(scale_work)
+
+
+def _project_quantize_symmetric_int8(p: Tensor, x: Tensor) -> tuple[Tensor, Tensor]:
+    if x.is_cuda and p.is_cuda and x.ndim == 3 and p.ndim == 2 and not _triton_disabled():
+        try:
+            from lowpass_triton import project_quantize_int8
+
+            return project_quantize_int8(x, p)
+        except Exception:
+            pass
+    x_hat = torch.einsum("rl,...lc->...rc", p, x)
+    return _quantize_symmetric_int8(x_hat)
+
+
 def _effective_max_rank_for_dimension(projector_dim: int, limit: int, config: LowpassConfig) -> int:
     if limit == 0:
         return 0
@@ -225,6 +262,12 @@ def _effective_max_rank(samples: Tensor, config: LowpassConfig) -> int:
 
 def _is_power_of_two(value: int) -> bool:
     return value > 0 and (value & (value - 1)) == 0
+
+
+def _next_power_of_two(value: int) -> int:
+    if value <= 1:
+        return 1
+    return 1 << (int(value) - 1).bit_length()
 
 
 def _bit_reverse(value: int, width: int) -> int:
@@ -338,8 +381,65 @@ def _fixed_projector(
 
 
 def _project_fixed_token_basis(kind: str, x: Tensor, rank: int) -> Tensor:
+    if x.is_cuda and x.ndim == 3 and kind in {"hadamard", "haar"} and not _triton_disabled():
+        try:
+            from lowpass_triton import piecewise_project
+
+            coefficients_and_segment_len = _piecewise_projector_coefficients(
+                kind, x.shape[-2], rank, x.device, x.dtype
+            )
+            if coefficients_and_segment_len is not None:
+                coefficients, segment_len = coefficients_and_segment_len
+                return piecewise_project(x, coefficients, segment_len=segment_len)
+        except Exception:
+            pass
     projector = _fixed_projector(kind, x.shape[-2], rank, x.device, x.dtype)
     return torch.einsum("rl,...lc->...rc", projector, x)
+
+
+def _piecewise_segment_count(kind: str, seq_len: int, rank: int) -> int | None:
+    rank = min(max(int(rank), 0), int(seq_len))
+    if kind not in {"hadamard", "haar"} or rank <= 0:
+        return None
+    if not _is_power_of_two(seq_len):
+        return None
+    segment_count = min(_next_power_of_two(rank), seq_len)
+    if seq_len % segment_count != 0:
+        return None
+    return segment_count
+
+
+def _piecewise_projector_coefficients(
+    kind: str,
+    seq_len: int,
+    rank: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[Tensor, int] | None:
+    segment_count = _piecewise_segment_count(kind, seq_len, rank)
+    if segment_count is None:
+        return None
+    segment_len = seq_len // segment_count
+    projector = _fixed_projector(kind, seq_len, rank, device, dtype)
+    coefficients = projector[:, ::segment_len].contiguous()
+    return coefficients, segment_len
+
+
+def _project_fixed_token_basis_quantized(kind: str, x: Tensor, rank: int) -> tuple[Tensor, Tensor]:
+    if x.is_cuda and x.ndim == 3 and kind in {"hadamard", "haar"} and not _triton_disabled():
+        try:
+            from lowpass_triton import piecewise_project_quantize_int8
+
+            coefficients_and_segment_len = _piecewise_projector_coefficients(
+                kind, x.shape[-2], rank, x.device, x.dtype
+            )
+            if coefficients_and_segment_len is not None:
+                coefficients, segment_len = coefficients_and_segment_len
+                return piecewise_project_quantize_int8(x, coefficients, segment_len=segment_len)
+        except Exception:
+            pass
+    projector = _fixed_projector(kind, x.shape[-2], rank, x.device, x.dtype)
+    return _project_quantize_symmetric_int8(projector, x)
 
 
 def _fixed_transform_projector(
@@ -437,6 +537,7 @@ class _LowpassLinearFunction(torch.autograd.Function):
         use_lowpass: bool,
         exact_input_grad: bool,
         compress_gradients: bool,
+        activation_storage: str,
         projector_kind: str,
     ) -> Tensor:
         needs_gradient_projector = compress_gradients
@@ -470,6 +571,7 @@ class _LowpassLinearFunction(torch.autograd.Function):
         ctx.has_bias = bias is not None
         ctx.exact_input_grad = exact_input_grad or not compress_gradients
         ctx.compress_gradients = compress_gradients
+        ctx.activation_storage = activation_storage
         ctx.projector_kind = projector_kind
         ctx.activation_rank = int(min(activation_rank, x.shape[-2]))
         ctx.gradient_rank = int(min(gradient_rank, x.shape[-2])) if gradient_rank > 0 else 0
@@ -478,15 +580,34 @@ class _LowpassLinearFunction(torch.autograd.Function):
         if not use_fixed_projector:
             p = activation_projector.to(device=x.device, dtype=work_dtype)
             q = gradient_projector.to(device=x.device, dtype=work_dtype) if gradient_projector is not None else None
-        if use_fixed_projector:
-            x_hat = _project_fixed_token_basis(projector_kind, x.to(work_dtype), ctx.activation_rank)
+        if activation_storage == "int8":
+            if use_fixed_projector:
+                x_hat_q, x_hat_scale = _project_fixed_token_basis_quantized(
+                    projector_kind,
+                    x.to(work_dtype),
+                    ctx.activation_rank,
+                )
+            else:
+                x_hat_q, x_hat_scale = _project_quantize_symmetric_int8(p, x.to(work_dtype))
+            if compress_gradients and not use_fixed_projector:
+                ctx.save_for_backward(x_hat_q, x_hat_scale, weight, p, q)
+            else:
+                saved_tensors = (
+                    (x_hat_q, x_hat_scale, weight)
+                    if use_fixed_projector
+                    else (x_hat_q, x_hat_scale, weight, p)
+                )
+                ctx.save_for_backward(*saved_tensors)
         else:
-            x_hat = torch.einsum("rl,...lc->...rc", p, x.to(work_dtype))
-        if compress_gradients and not use_fixed_projector:
-            ctx.save_for_backward(x_hat, weight, p, q)
-        else:
-            saved_tensors = (x_hat, weight) if use_fixed_projector else (x_hat, weight, p)
-            ctx.save_for_backward(*saved_tensors)
+            if use_fixed_projector:
+                x_hat = _project_fixed_token_basis(projector_kind, x.to(work_dtype), ctx.activation_rank)
+            else:
+                x_hat = torch.einsum("rl,...lc->...rc", p, x.to(work_dtype))
+            if compress_gradients and not use_fixed_projector:
+                ctx.save_for_backward(x_hat, weight, p, q)
+            else:
+                saved_tensors = (x_hat, weight) if use_fixed_projector else (x_hat, weight, p)
+                ctx.save_for_backward(*saved_tensors)
         return y
 
     @staticmethod
@@ -503,16 +624,26 @@ class _LowpassLinearFunction(torch.autograd.Function):
             if ctx.has_bias and ctx.needs_input_grad[2]:
                 reduce_dims = tuple(range(grad_output.ndim - 1))
                 grad_bias = grad_output.sum(dim=reduce_dims)
-            return grad_x, grad_weight, grad_bias, None, None, None, None, None, None, None, None
+            return grad_x, grad_weight, grad_bias, None, None, None, None, None, None, None, None, None
 
         use_fixed_projector = ctx.projector_kind != "svd"
-        if use_fixed_projector:
-            x_hat, weight = ctx.saved_tensors
-        elif ctx.compress_gradients:
-            x_hat, weight, p, q = ctx.saved_tensors
+        if ctx.activation_storage == "int8":
+            if use_fixed_projector:
+                x_hat_q, x_hat_scale, weight = ctx.saved_tensors
+            elif ctx.compress_gradients:
+                x_hat_q, x_hat_scale, weight, p, q = ctx.saved_tensors
+            else:
+                x_hat_q, x_hat_scale, weight, p = ctx.saved_tensors
+            work_dtype = grad_output.dtype if use_fixed_projector else p.dtype
+            x_hat = _dequantize_symmetric_int8(x_hat_q, x_hat_scale, work_dtype)
         else:
-            x_hat, weight, p = ctx.saved_tensors
-        work_dtype = x_hat.dtype if use_fixed_projector else p.dtype
+            if use_fixed_projector:
+                x_hat, weight = ctx.saved_tensors
+            elif ctx.compress_gradients:
+                x_hat, weight, p, q = ctx.saved_tensors
+            else:
+                x_hat, weight, p = ctx.saved_tensors
+            work_dtype = x_hat.dtype if use_fixed_projector else p.dtype
         go = grad_output.to(work_dtype)
         grad_x = grad_weight = grad_bias = None
 
@@ -549,7 +680,7 @@ class _LowpassLinearFunction(torch.autograd.Function):
             reduce_dims = tuple(range(grad_output.ndim - 1))
             grad_bias = grad_output.sum(dim=reduce_dims)
 
-        return grad_x, grad_weight, grad_bias, None, None, None, None, None, None, None, None
+        return grad_x, grad_weight, grad_bias, None, None, None, None, None, None, None, None, None
 
 
 class LowpassLinear(torch.nn.Module):
@@ -657,6 +788,7 @@ class LowpassLinear(torch.nn.Module):
             use_lowpass,
             self.config.exact_input_grad,
             self.config.compress_gradients,
+            self.config.activation_storage,
             self.config.projector_kind,
         )
 

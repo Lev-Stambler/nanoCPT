@@ -1,0 +1,20 @@
+Track 2 (5min)
+Description: Track2 YAQA-A WSD beta1=0 beta2=0.95 freq=10 thresh=3072 lr=2e-5 seed1337
+Contributors:
+Date: 2026-05-29
+Data mode: cpt
+Loss mask: all_tokens
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 5.0
+Eval loss drop: 0.668127
+Baseline eval loss: 1.021390
+Final eval loss: 0.353262
+Steps: 89
+Tokens: 2,916,352
+Supervised tokens: 2,915,640
+Eval supervised tokens: 262,144
+Compile + warmup (untimed): 267.3s
+Elapsed budget: 301.9s
+Budget tokens/sec: 9661
+Train-loop elapsed: 301.9s
+Train-loop tokens/sec: 9661

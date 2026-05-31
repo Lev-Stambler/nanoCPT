@@ -16,7 +16,6 @@ import json
 import os
 import re
 import uuid
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Literal
 
@@ -32,16 +31,6 @@ DEFAULT_MODEL_REVISION = "1001bb4d826a52d1f399e183466143f4da7b741b"
 DEFAULT_DATASET_ID = "TearedModels/conlangcrafter-cpt-bd412d52"
 DEFAULT_DATASET_CONFIG = ""
 DEFAULT_DATASET_REVISION = "5cfd047a92023011326e8383d45d97db22add909"
-# Held-out generalization eval (CPT only). Empty = legacy behavior: the eval
-# blocks are sliced from the leading documents of the training stream (same
-# generator/topics/lexicon as train), so the metric measures distribution-fitting
-# rather than generalization. Point this at a SEPARATE corpus generated from the
-# same grammar with a different seed + disjoint topics to measure generalization
-# to unseen text. When set, training reads the full train corpus (no skip).
-DEFAULT_HELDOUT_EVAL_DATASET_ID = ""
-DEFAULT_HELDOUT_EVAL_DATASET_CONFIG = ""
-DEFAULT_HELDOUT_EVAL_DATASET_REVISION = ""
-DEFAULT_HELDOUT_EVAL_SPLIT = "train"
 # Legacy CPT dataset — kept so the records under records/track_1_30min/2026-05-*
 # can be reproduced. Pass --dataset-id explicitly to use it.
 LEGACY_CPT_DATASET_ID = "HuggingFaceTB/finemath"
@@ -61,17 +50,9 @@ DEFAULT_NORMUON_EPS = 1.0e-8
 DEFAULT_SEQUENCE_PACKING = True
 DEFAULT_PACKING_STRATEGY = "stream_concat_no_padding"
 DEFAULT_CPT_TEXT_FIELD = "text"
-DEFAULT_LOWPASS_TARGET_FILTER = "all_no_lmhead"
-LOWPASS_TARGET_FILTER_CHOICES = {"mlp", "all", "all_no_lmhead", "none"}
-LOWPASS_ACTIVATION_STORAGE_CHOICES = {"float", "int8"}
-# VRAM guardrail. Modal's gpu="H100" has returned both the 80 GB HBM3 SKU and a
-# ~93 GB H100 NVL; capping every card to the same byte budget (DEFAULT_VRAM_FRACTION
-# of the 80 GB reference) makes runs behave identically regardless of which SKU is
-# scheduled, and leaves headroom so transient spikes don't OOM.
-DEFAULT_VRAM_FRACTION = 0.92
-# torch `total_memory / 2**30` for the 80 GB HBM3 card; matches the
-# `gpu_total_memory_gib` recorded in the v2 records' summary.json.
-H100_80GB_TOTAL_MEMORY_GIB = 79.1788
+DEFAULT_LOWPASS_KEEP = 8
+DEFAULT_LOWPASS_TARGET_FILTER = "mlp"
+LOWPASS_TARGET_FILTER_CHOICES = {"mlp", "all", "none"}
 # Eval-correctness version. Bump when a change alters absolute eval-loss
 # numbers (e.g. document-aware attention masking, eval-set tokenization
 # changes). Records under records/<track>/v<N>/ are only comparable within
@@ -87,7 +68,6 @@ OPTIMIZER_CHOICES = {
     "muon8",
     "normuon",
     "yaqadamw",
-    "yaqamuon",
 }
 LR_SCHEDULE_CHOICES = {"constant", "linear", "cosine", "wsd"}
 MUON_LR_ADJUSTMENT_CHOICES = {"original", "match_rms_adamw"}
@@ -206,55 +186,6 @@ def _resolve_dataset_defaults(
     return dataset_id, dataset_config, dataset_revision
 
 
-def _cpt_eval_key_payload(
-    *,
-    model_id: str,
-    model_revision: str,
-    dataset_id: str,
-    dataset_config: str,
-    dataset_revision: str,
-    seq_len: int,
-    eval_blocks: int,
-    seed: int,
-    cpt_text_field: str,
-    pack_align: int,
-    heldout_eval_active: bool = False,
-    heldout_eval_dataset_id: str = "",
-    heldout_eval_dataset_config: str = "",
-    heldout_eval_dataset_revision: str = "",
-    heldout_eval_split: str = "train",
-) -> dict[str, Any]:
-    """Build the CPT eval-cache key payload.
-
-    Module-level (and unit-tested) so we can guarantee the key is byte-identical
-    to the legacy one when no held-out corpus is active — that is what keeps
-    existing eval caches and records valid. Only the held-out path mutates the
-    payload (bumps ``kind`` and adds the held-out dataset fields).
-    """
-    payload: dict[str, Any] = {
-        "model": model_id,
-        "model_revision": model_revision,
-        "dataset": dataset_id,
-        "dataset_config": dataset_config,
-        "dataset_revision": dataset_revision,
-        "seq_len": seq_len,
-        "eval_blocks": eval_blocks,
-        "sequence_packing": DEFAULT_SEQUENCE_PACKING,
-        "packing_strategy": DEFAULT_PACKING_STRATEGY,
-        "seed": seed,
-        "kind": "all_token_cpt_packed_v3_docaware",
-        "text_field": cpt_text_field,
-        "pack_align": pack_align,
-    }
-    if heldout_eval_active:
-        payload["kind"] = "all_token_cpt_packed_v4_heldout"
-        payload["heldout_eval_dataset"] = heldout_eval_dataset_id
-        payload["heldout_eval_dataset_config"] = heldout_eval_dataset_config
-        payload["heldout_eval_dataset_revision"] = heldout_eval_dataset_revision
-        payload["heldout_eval_split"] = heldout_eval_split
-    return payload
-
-
 def _supervised_token_count(labels) -> int:
     if isinstance(labels, list):
         if labels and isinstance(labels[0], list):
@@ -308,23 +239,8 @@ image = (
         "git+https://github.com/huggingface/transformers.git",
         extra_options="--no-build-isolation",
     )
-    .add_local_python_source("lowpass", "lowpass_triton")
+    .add_local_python_source("lowpass")
 )
-
-
-def compute_vram_fraction(
-    detected_total_gib: float,
-    target_fraction: float,
-    reference_total_gib: float,
-) -> float:
-    """Per-card allocator fraction that caps this GPU at the same byte budget as
-    ``target_fraction`` of an 80 GB reference card. Returns 0.0 (meaning "no cap")
-    when ``target_fraction <= 0``. Never raises the cap above ``target_fraction``,
-    so smaller-than-reference cards keep the requested fraction."""
-    if target_fraction <= 0.0:
-        return 0.0
-    budget_gib = reference_total_gib * target_fraction
-    return min(target_fraction, budget_gib / detected_total_gib)
 
 
 def _json_default(value: Any) -> Any:
@@ -339,9 +255,6 @@ def _slugify(value: str) -> str:
 
 
 def _format_record_text(summary: dict[str, Any]) -> str:
-    eval_mode = summary.get("eval_mode", "leading_docs")
-    if summary.get("eval_is_heldout"):
-        eval_mode = f"{eval_mode} (heldout: {summary.get('heldout_eval_dataset_id', '')})"
     return (
         f"Track {summary['track']} ({summary['track_name']})\n"
         f"Description: {summary['record_description']}\n"
@@ -349,7 +262,6 @@ def _format_record_text(summary: dict[str, Any]) -> str:
         f"Date: {summary['record_date']}\n"
         f"Data mode: {summary.get('data_mode', 'cpt')}\n"
         f"Loss mask: {summary.get('loss_mask', 'all_tokens')}\n"
-        f"Eval mode: {eval_mode}\n"
         f"Sequence packing: {summary.get('sequence_packing', DEFAULT_SEQUENCE_PACKING)} "
         f"({summary.get('packing_strategy', DEFAULT_PACKING_STRATEGY)})\n"
         f"Minutes: {summary['minutes']}\n"
@@ -406,18 +318,12 @@ def run_track1(
     warmup_steps: int = 20,
     eval_blocks: int = 64,
     eval_micro_batch_size: int = 0,
-    vram_fraction: float = DEFAULT_VRAM_FRACTION,
     seed: int = 1337,
     model_id: str = DEFAULT_MODEL_ID,
     model_revision: str = DEFAULT_MODEL_REVISION,
     dataset_id: str = "",
     dataset_config: str = "",
     dataset_revision: str = "",
-    heldout_eval_dataset_id: str = DEFAULT_HELDOUT_EVAL_DATASET_ID,
-    heldout_eval_dataset_config: str = DEFAULT_HELDOUT_EVAL_DATASET_CONFIG,
-    heldout_eval_dataset_revision: str = DEFAULT_HELDOUT_EVAL_DATASET_REVISION,
-    heldout_eval_split: str = DEFAULT_HELDOUT_EVAL_SPLIT,
-    eval_random_baseline: bool = False,
     cpt_text_field: str = DEFAULT_CPT_TEXT_FIELD,
     data_mode: str = "cpt",
     optimizer_name: Literal[
@@ -428,7 +334,6 @@ def run_track1(
         "muon8",
         "normuon",
         "yaqadamw",
-        "yaqamuon",
     ] = "auto",
     gradient_checkpointing: Literal["auto", "true", "false"] = "auto",
     muon_lr_adjustment: Literal["original", "match_rms_adamw"] = "match_rms_adamw",
@@ -437,30 +342,17 @@ def run_track1(
     normuon_eps: float = DEFAULT_NORMUON_EPS,
     muon_lr: float = 0.0,
     adamw_tail_lr: float = 0.0,
-    yaqa_beta1: float = 0.0,
-    yaqa_beta2: float = 0.95,
-    yaqa_update_freq: int = 10,
-    yaqa_full_dim_threshold: int = 3072,
-    yaqa_eps: float = 1.0e-6,
-    yaqa_sketch_mode: Literal["A", "B"] = "B",
-    yaqa_power_steps: int = 1,
-    yaqa_use_newton_schulz: bool = False,
-    yaqa_newton_schulz_iters: int = 7,
-    yaqa_burst_collect_steps: int = 0,
+    yaqa_mode: Literal["static", "online_ema"] = "static",
+    yaqa_calib_sequences: int = 256,
+    yaqa_min_scale: float = 0.1,
+    yaqa_max_scale: float = 10.0,
+    yaqa_eps: float = 1.0e-8,
     lowpass: bool = False,
-    lowpass_projector_kind: Literal["svd", "dct", "hadamard", "haar", "random"] = "svd",
-    lowpass_target_filter: Literal["mlp", "all", "all_no_lmhead", "none"] = DEFAULT_LOWPASS_TARGET_FILTER,
-    lowpass_min_rank: int = 4,
-    lowpass_max_rank: int = 64,
-    lowpass_activation_energy: float = 0.95,
-    lowpass_gradient_energy: float = 0.95,
-    lowpass_compress_gradients: bool = True,
-    lowpass_exact_input_grad: bool = False,
-    lowpass_activation_storage: Literal["float", "int8"] = "float",
-    lowpass_oversample: int = 8,
-    lowpass_power_iterations: int = 2,
-    lowpass_calibration_steps: int = 8,
-    lowpass_calibration_max_columns: int = 2048,
+    lowpass_projector_kind: Literal["dct", "hadamard", "haar"] = "dct",
+    lowpass_keep: int = DEFAULT_LOWPASS_KEEP,
+    lowpass_target_filter: Literal["mlp", "all", "none"] = DEFAULT_LOWPASS_TARGET_FILTER,
+    lowpass_min_hidden_dim: int = 8000,
+    lowpass_max_hidden_dim: int = 16000,
     lr_schedule: Literal["constant", "linear", "cosine", "wsd"] = "constant",
     lr_decay_fraction: float = 0.1,
     min_lr_ratio: float = 0.0,
@@ -550,45 +442,23 @@ def run_track1(
         raise ValueError("--muon-lr must be non-negative; use 0 to fall back to --lr")
     if adamw_tail_lr < 0.0:
         raise ValueError("--adamw-tail-lr must be non-negative; use 0 to fall back to --lr")
-    if yaqa_beta1 < 0.0 or yaqa_beta1 >= 1.0:
-        raise ValueError("--yaqa-beta1 must be in [0, 1)")
-    if yaqa_beta2 < 0.0 or yaqa_beta2 >= 1.0:
-        raise ValueError("--yaqa-beta2 must be in [0, 1)")
-    if yaqa_update_freq < 0:
-        raise ValueError("--yaqa-update-freq must be non-negative")
-    if yaqa_full_dim_threshold < 1:
-        raise ValueError("--yaqa-full-dim-threshold must be positive")
+    if yaqa_mode not in {"static", "online_ema"}:
+        raise ValueError("--yaqa-mode must be one of: static, online_ema")
+    if yaqa_calib_sequences < 1:
+        raise ValueError("--yaqa-calib-sequences must be positive")
+    if yaqa_min_scale <= 0.0:
+        raise ValueError("--yaqa-min-scale must be positive")
+    if yaqa_max_scale < yaqa_min_scale:
+        raise ValueError("--yaqa-max-scale must be >= --yaqa-min-scale")
     if yaqa_eps <= 0.0:
         raise ValueError("--yaqa-eps must be positive")
-    if yaqa_sketch_mode not in {"A", "B"}:
-        raise ValueError("--yaqa-sketch-mode must be one of: A, B")
-    if yaqa_power_steps < 1:
-        raise ValueError("--yaqa-power-steps must be positive")
-    if yaqa_newton_schulz_iters < 1:
-        raise ValueError("--yaqa-newton-schulz-iters must be positive")
-    if yaqa_burst_collect_steps < 0:
-        raise ValueError("--yaqa-burst-collect-steps must be non-negative")
     lowpass_target_filter = str(lowpass_target_filter).lower()
     if lowpass_target_filter not in LOWPASS_TARGET_FILTER_CHOICES:
         raise ValueError(
             f"--lowpass-target-filter must be one of: {', '.join(sorted(LOWPASS_TARGET_FILTER_CHOICES))}"
         )
-    lowpass_activation_storage = str(lowpass_activation_storage).lower()
-    if lowpass_activation_storage not in LOWPASS_ACTIVATION_STORAGE_CHOICES:
-        raise ValueError(
-            "--lowpass-activation-storage must be one of: "
-            f"{', '.join(sorted(LOWPASS_ACTIVATION_STORAGE_CHOICES))}"
-        )
-    if lowpass_min_rank < 1:
-        raise ValueError("--lowpass-min-rank must be positive")
-    if lowpass_max_rank < lowpass_min_rank:
-        raise ValueError("--lowpass-max-rank must be >= --lowpass-min-rank")
-    if not (0.0 < lowpass_activation_energy <= 1.0):
-        raise ValueError("--lowpass-activation-energy must be in (0, 1]")
-    if not (0.0 < lowpass_gradient_energy <= 1.0):
-        raise ValueError("--lowpass-gradient-energy must be in (0, 1]")
-    if lowpass_calibration_steps < 1:
-        raise ValueError("--lowpass-calibration-steps must be positive")
+    if lowpass_keep < 1:
+        raise ValueError("--lowpass-keep must be positive")
     lr_schedule = str(lr_schedule).lower()
     if lr_schedule not in LR_SCHEDULE_CHOICES:
         raise ValueError(f"--lr-schedule must be one of: {', '.join(sorted(LR_SCHEDULE_CHOICES))}")
@@ -615,10 +485,6 @@ def run_track1(
         dataset_config,
         dataset_revision,
     )
-    # A separate held-out eval corpus is only meaningful for CPT (the SFT path
-    # already evaluates on a distinct UltraChat split). When active, the eval
-    # blocks come from heldout_eval_dataset_id and training reads the full corpus.
-    heldout_eval_active = bool(heldout_eval_dataset_id) and data_mode != "sft"
     requested_micro_batch_size = micro_batch_size
     requested_grad_accum = grad_accum
     requested_eval_micro_batch_size = eval_micro_batch_size
@@ -682,24 +548,6 @@ def run_track1(
     gpu_index = torch.cuda.current_device()
     gpu_props = torch.cuda.get_device_properties(gpu_index)
     gpu_name = torch.cuda.get_device_name(gpu_index)
-    # Cap the caching allocator to the same byte budget regardless of which H100
-    # SKU Modal scheduled (80 GB HBM3 vs ~93 GB NVL), so runs behave identically
-    # and keep headroom against transient spikes. Set --vram-fraction 0 to disable.
-    detected_total_gib = gpu_props.total_memory / bytes_per_gib
-    applied_vram_fraction = compute_vram_fraction(
-        detected_total_gib, vram_fraction, H100_80GB_TOTAL_MEMORY_GIB
-    )
-    vram_budget_gib = detected_total_gib * applied_vram_fraction
-    if applied_vram_fraction > 0.0:
-        try:
-            torch.cuda.set_per_process_memory_fraction(applied_vram_fraction, gpu_index)
-            print(
-                f"VRAM cap: {gpu_name} total={detected_total_gib:.1f}GiB -> "
-                f"fraction={applied_vram_fraction:.4f} budget={vram_budget_gib:.1f}GiB",
-                flush=True,
-            )
-        except Exception as exc:
-            print(f"warning: could not set VRAM fraction: {exc}", flush=True)
     nvml = None
     nvml_handle = None
     nvml_error = ""
@@ -783,9 +631,6 @@ def run_track1(
         "target_effective_tokens_per_step": DEFAULT_EFFECTIVE_TOKENS_PER_STEP,
         "gpu_name": gpu_name,
         "gpu_total_memory_gib": gpu_props.total_memory / bytes_per_gib,
-        "vram_fraction_requested": vram_fraction,
-        "vram_fraction_applied": applied_vram_fraction,
-        "vram_budget_gib": vram_budget_gib,
         "lr": lr,
         "requested_lr": requested_lr,
         "weight_decay": weight_decay,
@@ -803,12 +648,6 @@ def run_track1(
         "requested_dataset_id": requested_dataset_id,
         "requested_dataset_config": requested_dataset_config,
         "requested_dataset_revision": requested_dataset_revision,
-        "heldout_eval_dataset_id": heldout_eval_dataset_id,
-        "heldout_eval_dataset_config": heldout_eval_dataset_config,
-        "heldout_eval_dataset_revision": heldout_eval_dataset_revision,
-        "heldout_eval_split": heldout_eval_split,
-        "eval_is_heldout": heldout_eval_active,
-        "eval_mode": "heldout" if heldout_eval_active else "leading_docs",
         "data_mode": data_mode,
         "loss_mask": "assistant_only" if data_mode == "sft" else "all_tokens",
         "sequence_packing": DEFAULT_SEQUENCE_PACKING,
@@ -829,30 +668,16 @@ def run_track1(
         "adamw_tail_lr": resolved_adamw_tail_lr,
         "requested_muon_lr": requested_muon_lr,
         "requested_adamw_tail_lr": requested_adamw_tail_lr,
-        "yaqa_beta1": yaqa_beta1,
-        "yaqa_beta2": yaqa_beta2,
-        "yaqa_update_freq": yaqa_update_freq,
-        "yaqa_full_dim_threshold": yaqa_full_dim_threshold,
+        "yaqa_mode": yaqa_mode,
+        "yaqa_calib_sequences": yaqa_calib_sequences,
+        "yaqa_min_scale": yaqa_min_scale,
+        "yaqa_max_scale": yaqa_max_scale,
         "yaqa_eps": yaqa_eps,
-        "yaqa_sketch_mode": yaqa_sketch_mode,
-        "yaqa_power_steps": yaqa_power_steps,
-        "yaqa_use_newton_schulz": bool(yaqa_use_newton_schulz),
-        "yaqa_newton_schulz_iters": yaqa_newton_schulz_iters,
-        "yaqa_burst_collect_steps": yaqa_burst_collect_steps,
         "lowpass": bool(lowpass),
         "lowpass_projector_kind": lowpass_projector_kind,
-        "lowpass_target_filter": lowpass_target_filter,
-        "lowpass_min_rank": lowpass_min_rank,
-        "lowpass_max_rank": lowpass_max_rank,
-        "lowpass_activation_energy": lowpass_activation_energy,
-        "lowpass_gradient_energy": lowpass_gradient_energy,
-        "lowpass_compress_gradients": bool(lowpass_compress_gradients),
-        "lowpass_exact_input_grad": bool(lowpass_exact_input_grad),
-        "lowpass_activation_storage": lowpass_activation_storage,
-        "lowpass_oversample": lowpass_oversample,
-        "lowpass_power_iterations": lowpass_power_iterations,
-        "lowpass_calibration_steps": lowpass_calibration_steps,
-        "lowpass_calibration_max_columns": lowpass_calibration_max_columns,
+        "lowpass_keep": lowpass_keep,
+        "lowpass_min_hidden_dim": lowpass_min_hidden_dim,
+        "lowpass_max_hidden_dim": lowpass_max_hidden_dim,
         "eval_version": EVAL_VERSION,
         "pack_align": pack_align,
         "lr_schedule": lr_schedule,
@@ -932,28 +757,17 @@ def run_track1(
             dir=str(run_dir),
         )
 
-    def dataset_stream(
-        shuffle: bool = False,
-        purpose: Literal["train", "eval"] = "train",
-        source: Literal["train", "heldout_eval"] = "train",
-    ):
-        if source == "heldout_eval" and heldout_eval_active:
-            stream_id = heldout_eval_dataset_id
-            stream_config = heldout_eval_dataset_config
-            stream_revision = heldout_eval_dataset_revision
-            split = heldout_eval_split or "train"
-        elif data_mode == "sft" and dataset_id == DEFAULT_SFT_DATASET_ID:
-            stream_id, stream_config, stream_revision = dataset_id, dataset_config, dataset_revision
+    def dataset_stream(shuffle: bool = False, purpose: Literal["train", "eval"] = "train"):
+        if data_mode == "sft" and dataset_id == DEFAULT_SFT_DATASET_ID:
             split = DEFAULT_SFT_EVAL_SPLIT if purpose == "eval" else DEFAULT_SFT_TRAIN_SPLIT
         else:
-            stream_id, stream_config, stream_revision = dataset_id, dataset_config, dataset_revision
             split = "train"
         ds = load_dataset(
-            stream_id,
-            stream_config or None,
+            dataset_id,
+            dataset_config or None,
             split=split,
             streaming=True,
-            revision=stream_revision or None,
+            revision=dataset_revision or None,
             cache_dir=str(HF_CACHE / "datasets"),
         )
         if shuffle:
@@ -1021,25 +835,21 @@ def run_track1(
         return input_ids, labels, position_ids, int(payload["skip_docs"]), supervised_tokens
 
     def build_cpt_eval_cache() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, Path, int]:
-        # Built by a module-level helper (unit-tested) so the key is provably
-        # byte-identical to the legacy one when no held-out corpus is active.
-        key_payload = _cpt_eval_key_payload(
-            model_id=model_id,
-            model_revision=model_revision,
-            dataset_id=dataset_id,
-            dataset_config=dataset_config,
-            dataset_revision=dataset_revision,
-            seq_len=seq_len,
-            eval_blocks=eval_blocks,
-            seed=seed,
-            cpt_text_field=cpt_text_field,
-            pack_align=pack_align,
-            heldout_eval_active=heldout_eval_active,
-            heldout_eval_dataset_id=heldout_eval_dataset_id,
-            heldout_eval_dataset_config=heldout_eval_dataset_config,
-            heldout_eval_dataset_revision=heldout_eval_dataset_revision,
-            heldout_eval_split=heldout_eval_split,
-        )
+        key_payload = {
+            "model": model_id,
+            "model_revision": model_revision,
+            "dataset": dataset_id,
+            "dataset_config": dataset_config,
+            "dataset_revision": dataset_revision,
+            "seq_len": seq_len,
+            "eval_blocks": eval_blocks,
+            "sequence_packing": DEFAULT_SEQUENCE_PACKING,
+            "packing_strategy": DEFAULT_PACKING_STRATEGY,
+            "seed": seed,
+            "kind": "all_token_cpt_packed_v3_docaware",
+            "text_field": cpt_text_field,
+            "pack_align": pack_align,
+        }
         key = hashlib.sha256(json.dumps(key_payload, sort_keys=True).encode()).hexdigest()[:20]
         eval_path = eval_dir / f"{key}.pt"
         if eval_path.exists():
@@ -1051,8 +861,7 @@ def run_track1(
         label_buffer: list[int] = []
         position_buffer: list[int] = []
         skip_docs = 0
-        eval_source = "heldout_eval" if heldout_eval_active else "train"
-        for row in dataset_stream(shuffle=False, source=eval_source):
+        for row in dataset_stream(shuffle=False):
             text = row.get(cpt_text_field)
             if not isinstance(text, str) or not text.strip():
                 skip_docs += 1
@@ -1075,23 +884,18 @@ def run_track1(
         position_ids = torch.tensor(position_buffer[:need_tokens], dtype=torch.long).view(eval_blocks, seq_len)
         labels = torch.tensor(label_buffer[:need_tokens], dtype=torch.long).view(eval_blocks, seq_len)
         supervised_tokens = int((labels != -100).sum())
-        # The 4th return value is how many leading TRAIN docs to skip. With a
-        # held-out corpus the eval docs come from a different dataset, so there
-        # is nothing to skip; record the consumed eval-doc count separately.
-        train_skip = 0 if heldout_eval_active else skip_docs
         torch.save(
             {
                 "input_ids": input_ids,
                 "labels": labels,
                 "position_ids": position_ids,
-                "skip_docs": train_skip,
-                "eval_docs": skip_docs,
+                "skip_docs": skip_docs,
                 "supervised_tokens": supervised_tokens,
                 "key_payload": key_payload,
             },
             eval_path,
         )
-        return input_ids, labels, position_ids, train_skip, eval_path, supervised_tokens
+        return input_ids, labels, position_ids, skip_docs, eval_path, supervised_tokens
 
     def build_sft_eval_cache() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, Path, int]:
         key_payload = {
@@ -1182,46 +986,6 @@ def run_track1(
         f"supervised_tokens={eval_supervised_tokens}",
         flush=True,
     )
-
-    def compute_ngram_reference_loss() -> float:
-        """In-sample token-bigram cross-entropy over the eval cache (CPU, nats).
-
-        A trivial reference: how compressible the eval set is by a first-order
-        Markov model fit on the eval set itself. In nats, so directly comparable
-        to the model's eval_loss. In-sample (optimistic floor, not a held-out
-        baseline). Transitions are counted only within a document (contiguous
-        position_ids) and over supervised tokens (labels != -100). A high model
-        drop with a *low* n-gram reference means the win is mostly local bigram
-        statistics, not deeper structure.
-        """
-        import math as _math
-        from collections import defaultdict
-
-        pair_counts: dict[tuple[int, int], int] = defaultdict(int)
-        prev_counts: dict[int, int] = defaultdict(int)
-        transitions: list[tuple[int, int]] = []
-        ids_list = eval_input_ids.tolist()
-        lab_list = eval_labels.tolist()
-        pos_list = eval_position_ids.tolist()
-        for row_ids, row_lab, row_pos in zip(ids_list, lab_list, pos_list):
-            for i in range(1, len(row_ids)):
-                if row_lab[i] == -100 or row_lab[i - 1] == -100:
-                    continue
-                if row_pos[i] != row_pos[i - 1] + 1:
-                    continue
-                prev, nxt = row_ids[i - 1], row_ids[i]
-                pair_counts[(prev, nxt)] += 1
-                prev_counts[prev] += 1
-                transitions.append((prev, nxt))
-        if not transitions:
-            return float("nan")
-        nll = 0.0
-        for prev, nxt in transitions:
-            nll -= _math.log(pair_counts[(prev, nxt)] / prev_counts[prev])
-        return nll / len(transitions)
-
-    ngram_reference_loss = compute_ngram_reference_loss()
-    print(f"ngram (bigram) reference loss: {ngram_reference_loss:.6f}", flush=True)
 
     def disable_model_cache(current_model: torch.nn.Module) -> None:
         if hasattr(current_model, "config"):
@@ -1322,43 +1086,6 @@ def run_track1(
 
     device = torch.device("cuda")
 
-    # Optional random-init reference: eval_loss of a freshly initialized model of
-    # the same architecture (no pretraining knowledge). Computed before the
-    # trained model is loaded so the two never coexist in VRAM, then freed.
-    random_init_eval_loss = None
-    if eval_random_baseline:
-        from transformers import AutoConfig
-
-        print("eval_random_baseline: building random-init reference model", flush=True)
-        rand_cfg = AutoConfig.from_pretrained(
-            model_id, revision=model_revision or None, cache_dir=str(HF_CACHE / "hub")
-        )
-        rand_model = ModelClass.from_config(
-            rand_cfg, torch_dtype=torch.bfloat16, attn_implementation=attn_implementation
-        )
-        disable_model_cache(rand_model)
-        rand_model.to(device)
-        rand_model.eval()
-        with torch.no_grad():
-            _wsum, _wcount = 0.0, 0
-            for start in range(0, eval_blocks, eval_micro_batch_size):
-                _b = eval_input_ids[start : start + eval_micro_batch_size].to(device, non_blocking=True)
-                _l = eval_labels[start : start + eval_micro_batch_size].to(device, non_blocking=True)
-                _p = eval_position_ids[start : start + eval_micro_batch_size].to(device, non_blocking=True)
-                _sup = _supervised_token_count(_l.detach().cpu())
-                if _sup == 0:
-                    continue
-                with torch.autocast("cuda", dtype=torch.bfloat16):
-                    _out = rand_model(
-                        input_ids=_b, attention_mask=None, position_ids=_p, labels=_l, use_cache=False
-                    )
-                _wsum += float(_out.loss.detach().cpu()) * _sup
-                _wcount += _sup
-            random_init_eval_loss = _wsum / _wcount if _wcount else float("nan")
-        print(f"random-init reference eval loss: {random_init_eval_loss:.6f}", flush=True)
-        del rand_model
-        torch.cuda.empty_cache()
-
     print("loading model", flush=True)
     model = ModelClass.from_pretrained(
         model_id,
@@ -1378,37 +1105,23 @@ def run_track1(
     torch.cuda.synchronize()
     log_gpu("after_model_to_cuda")
 
-    lowpass_config = None
     if lowpass:
-        from lowpass import (
-            LowpassConfig,
-            make_module_filter,
-            replace_linear_with_lowpass,
-        )
+        from lowpass import LowpassConfig, make_module_filter, replace_linear_with_lowpass
 
         lowpass_config = LowpassConfig(
-            max_seq_len=seq_len,
-            activation_energy=lowpass_activation_energy,
-            gradient_energy=lowpass_gradient_energy,
-            min_rank=lowpass_min_rank,
-            max_rank=lowpass_max_rank,
             projector_kind=lowpass_projector_kind,
-            oversample=lowpass_oversample,
-            power_iterations=lowpass_power_iterations,
-            calibration_max_columns=lowpass_calibration_max_columns,
-            exact_input_grad=bool(lowpass_exact_input_grad),
-            compress_gradients=bool(lowpass_compress_gradients),
-            activation_storage=lowpass_activation_storage,
+            keep=lowpass_keep,
+            min_hidden_dim=lowpass_min_hidden_dim,
+            max_hidden_dim=lowpass_max_hidden_dim,
         )
         filter_fn = make_module_filter(lowpass_target_filter)
         replaced = replace_linear_with_lowpass(model, lowpass_config, filter_fn)
         print(
             f"lowpass: replaced {len(replaced)} nn.Linear modules "
-            f"(target={lowpass_target_filter}, projector={lowpass_projector_kind}, "
-            f"max_rank={lowpass_max_rank}, energy={lowpass_activation_energy}, "
-            f"exact_input_grad={bool(lowpass_exact_input_grad)}, "
-            f"compress_gradients={bool(lowpass_compress_gradients)}, "
-            f"activation_storage={lowpass_activation_storage})",
+            f"(target={lowpass_target_filter}, keep={lowpass_keep}, "
+            f"hidden_dim∈[{lowpass_min_hidden_dim}, "
+            f"{lowpass_max_hidden_dim if lowpass_max_hidden_dim > 0 else '∞'}], "
+            f"projector={lowpass_projector_kind})",
             flush=True,
         )
 
@@ -1665,314 +1378,27 @@ def run_track1(
                     p.add_(normalized_update, alpha=-1.0)
             return loss
 
-    class YAQAMuon(Muon):
-        """Muon with YAQA full-matrix Kronecker preconditioning on gradients."""
+    class YAQADiagAdamW(torch.optim.Optimizer):
+        """AdamW with static diagonal Kronecker preconditioning from YAQA Sketch B."""
 
         def __init__(
             self,
             named_params,
-            lr: float,
-            momentum: float = 0.95,
-            weight_decay: float = 0.0,
-            ns_steps: int = 5,
-            nesterov: bool = True,
-            lr_adjustment: str = "original",
-            yaqa_beta2: float = 0.95,
-            yaqa_update_freq: int = 10,
-            yaqa_eps: float = 1.0e-6,
-            yaqa_full_dim_threshold: int = 3072,
-            yaqa_power_steps: int = 1,
-        ):
-            params = [p for _n, p in named_params if p.requires_grad]
-            super().__init__(
-                params,
-                lr=lr,
-                momentum=momentum,
-                weight_decay=weight_decay,
-                ns_steps=ns_steps,
-                nesterov=nesterov,
-                lr_adjustment=lr_adjustment,
-            )
-            self.yaqa_beta2 = yaqa_beta2
-            self.yaqa_update_freq = yaqa_update_freq
-            self.yaqa_eps = yaqa_eps
-            self.yaqa_full_dim_threshold = yaqa_full_dim_threshold
-            self.yaqa_power_steps = yaqa_power_steps
-            self._name_to_param: dict[str, torch.nn.Parameter] = {}
-            self._global_step = 0
-            for name, p in named_params:
-                if p.requires_grad:
-                    clean_name = name.removeprefix("_orig_mod.")
-                    self._name_to_param[clean_name] = p
-                    if p.dim() == 2 and max(p.shape) <= yaqa_full_dim_threshold:
-                        m, n = p.shape
-                        state = self.state[p]
-                        state["H_O"] = torch.eye(m, device=p.device, dtype=torch.float32)
-                        state["H_I"] = torch.eye(n, device=p.device, dtype=torch.float32)
-                        state["Q_O"] = torch.eye(m, device=p.device, dtype=p.dtype)
-                        state["Q_I"] = torch.eye(n, device=p.device, dtype=p.dtype)
-                        state["lam_O"] = torch.ones(m, device=p.device, dtype=p.dtype)
-                        state["lam_I"] = torch.ones(n, device=p.device, dtype=p.dtype)
-
-        @torch.no_grad()
-        def update_factors(self, name: str, H_O: torch.Tensor | None, H_I: torch.Tensor | None) -> None:
-            clean_name = name.removeprefix("_orig_mod.")
-            p = self._name_to_param.get(clean_name)
-            if p is None or p.dim() != 2:
-                return
-            m, n = p.shape
-            if max(m, n) > self.yaqa_full_dim_threshold:
-                return
-            state = self.state[p]
-            if "H_O" not in state:
-                state["H_O"] = torch.eye(m, device=p.device, dtype=torch.float32)
-                state["H_I"] = torch.eye(n, device=p.device, dtype=torch.float32)
-                state["Q_O"] = torch.eye(m, device=p.device, dtype=p.dtype)
-                state["Q_I"] = torch.eye(n, device=p.device, dtype=p.dtype)
-                state["lam_O"] = torch.ones(m, device=p.device, dtype=p.dtype)
-                state["lam_I"] = torch.ones(n, device=p.device, dtype=p.dtype)
-            beta = self.yaqa_beta2
-            if H_O is not None:
-                state["H_O"].mul_(beta).add_(H_O.to(state["H_O"].device, dtype=torch.float32), alpha=1 - beta)
-            if H_I is not None:
-                state["H_I"].mul_(beta).add_(H_I.to(state["H_I"].device, dtype=torch.float32), alpha=1 - beta)
-
-        @torch.no_grad()
-        def power_iteration_update(self, name: str, g: torch.Tensor, x: torch.Tensor) -> None:
-            clean_name = name.removeprefix("_orig_mod.")
-            p = self._name_to_param.get(clean_name)
-            if p is None or p.dim() != 2:
-                return
-            m, n = p.shape
-            if max(m, n) > self.yaqa_full_dim_threshold:
-                return
-            state = self.state[p]
-            if "H_O" not in state:
-                state["H_O"] = torch.eye(m, device=p.device, dtype=torch.float32)
-                state["H_I"] = torch.eye(n, device=p.device, dtype=torch.float32)
-                state["Q_O"] = torch.eye(m, device=p.device, dtype=p.dtype)
-                state["Q_I"] = torch.eye(n, device=p.device, dtype=p.dtype)
-                state["lam_O"] = torch.ones(m, device=p.device, dtype=p.dtype)
-                state["lam_I"] = torch.ones(n, device=p.device, dtype=p.dtype)
-
-            g_flat = g.reshape(-1, m).float()
-            x_flat = x.reshape(-1, n).float()
-            H_O = state["H_O"]
-            H_I = state["H_I"]
-            beta = self.yaqa_beta2
-            Bt = g_flat.shape[0]
-
-            for _ in range(self.yaqa_power_steps):
-                scalar = torch.einsum("im,mk,ik->i", g_flat, H_O, g_flat)
-                H_I_new = torch.einsum("in,i,ik->nk", x_flat, scalar, x_flat) / (Bt * H_O.norm()**2)
-                H_I.mul_(beta).add_(H_I_new, alpha=1 - beta)
-                scalar = torch.einsum("in,nk,ik->i", x_flat, H_I, x_flat)
-                H_O_new = torch.einsum("im,i,ik->mk", g_flat, scalar, g_flat) / (Bt * H_I.norm()**2)
-                H_O.mul_(beta).add_(H_O_new, alpha=1 - beta)
-            self._global_step += 1
-
-        @torch.no_grad()
-        def step(self, closure=None):
-            loss = None
-            if closure is not None:
-                with torch.enable_grad():
-                    loss = closure()
-            for group in self.param_groups:
-                lr = group["lr"]
-                momentum = group["momentum"]
-                weight_decay = group["weight_decay"]
-                ns_steps = group["ns_steps"]
-                nesterov = group["nesterov"]
-                lr_adjustment = group["lr_adjustment"]
-                for p in group["params"]:
-                    if p.grad is None:
-                        continue
-                    grad = p.grad
-                    if grad.ndim != 2:
-                        raise RuntimeError("YAQAMuon only supports 2D matrix parameters")
-                    state = self.state[p]
-                    # YAQA full-matrix preconditioning
-                    if "H_O" in state:
-                        m, n = p.shape
-                        if "step" not in state:
-                            state["step"] = 0
-                        state["step"] += 1
-                        step = state["step"]
-                        should_update = (
-                            (self.yaqa_update_freq == 1)
-                            or (self.yaqa_update_freq == 0 and step == 1)
-                            or (self.yaqa_update_freq > 1 and step % self.yaqa_update_freq == 1)
-                            or (step == 1)
-                        )
-                        if should_update:
-                            H_O = state["H_O"]
-                            H_I = state["H_I"]
-                            H_O_damped = H_O + self.yaqa_eps * torch.eye(m, device=H_O.device, dtype=H_O.dtype)
-                            H_I_damped = H_I + self.yaqa_eps * torch.eye(n, device=H_I.device, dtype=H_I.dtype)
-                            try:
-                                lam_O, Q_O = torch.linalg.eigh(H_O_damped)
-                                lam_I, Q_I = torch.linalg.eigh(H_I_damped)
-                                lam_O = lam_O.clamp_min(self.yaqa_eps)
-                                lam_I = lam_I.clamp_min(self.yaqa_eps)
-                                state["Q_O"] = Q_O.to(p.dtype)
-                                state["Q_I"] = Q_I.to(p.dtype)
-                                state["lam_O"] = lam_O.to(p.dtype)
-                                state["lam_I"] = lam_I.to(p.dtype)
-                            except Exception:
-                                pass
-                        Q_O = state["Q_O"]
-                        Q_I = state["Q_I"]
-                        lam_O = state["lam_O"]
-                        lam_I = state["lam_I"]
-                        G = grad.to(Q_O.dtype)
-                        G_tilde = Q_O.T @ G @ Q_I
-                        denom = torch.sqrt(lam_O.unsqueeze(1) * lam_I.unsqueeze(0) + self.yaqa_eps)
-                        G_prec = G_tilde / denom
-                        grad = (Q_O @ G_prec @ Q_I.T).to(p.grad.dtype)
-
-                    if "momentum_buffer" not in state:
-                        state["momentum_buffer"] = torch.zeros_like(grad)
-                    buf = state["momentum_buffer"]
-                    buf.lerp_(grad, 1.0 - momentum)
-                    update = grad.lerp(buf, momentum) if nesterov else buf
-                    update = self.zeropower_via_newtonschulz5(update, ns_steps)
-                    if weight_decay:
-                        p.mul_(1.0 - lr * weight_decay)
-                    adjusted_lr = self.adjust_lr(lr, lr_adjustment, p.shape)
-                    p.add_(update, alpha=-adjusted_lr)
-            return loss
-
-    class YAQAShampoo(torch.optim.Optimizer):
-        """Online YAQA-Shampoo: full-matrix Kronecker preconditioning via Sketch A or B."""
-
-        def __init__(
-            self,
-            named_params,
+            scales: dict[str, torch.Tensor],
             lr: float = 2.0e-5,
             betas: tuple[float, float] = (0.9, 0.95),
             eps: float = 1.0e-8,
             weight_decay: float = 0.1,
-            yaqa_beta1: float = 0.0,
-            yaqa_beta2: float = 0.95,
-            yaqa_update_freq: int = 10,
-            yaqa_eps: float = 1.0e-6,
-            yaqa_full_dim_threshold: int = 3072,
-            yaqa_sketch_mode: str = "B",
-            yaqa_power_steps: int = 1,
-            yaqa_use_newton_schulz: bool = False,
-            yaqa_newton_schulz_iters: int = 7,
         ):
             params = [p for _n, p in named_params if p.requires_grad]
             super().__init__(
                 params,
                 dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay),
             )
-            self.yaqa_beta1 = yaqa_beta1
-            self.yaqa_beta2 = yaqa_beta2
-            self.yaqa_update_freq = yaqa_update_freq
-            self.yaqa_eps = yaqa_eps
-            self.yaqa_full_dim_threshold = yaqa_full_dim_threshold
-            self.yaqa_sketch_mode = yaqa_sketch_mode
-            self.yaqa_power_steps = yaqa_power_steps
-            self.yaqa_use_newton_schulz = yaqa_use_newton_schulz
-            self.yaqa_newton_schulz_iters = yaqa_newton_schulz_iters
-            self._name_to_param: dict[str, torch.nn.Parameter] = {}
-            self._global_step = 0
-            for name, p in named_params:
-                if p.requires_grad:
-                    clean_name = name.removeprefix("_orig_mod.")
-                    self._name_to_param[clean_name] = p
-                    if p.dim() == 2 and max(p.shape) <= yaqa_full_dim_threshold:
-                        m, n = p.shape
-                        state = self.state[p]
-                        state["H_O"] = torch.eye(m, device=p.device, dtype=torch.float32)
-                        state["H_I"] = torch.eye(n, device=p.device, dtype=torch.float32)
-                        state["Q_O"] = torch.eye(m, device=p.device, dtype=p.dtype)
-                        state["Q_I"] = torch.eye(n, device=p.device, dtype=p.dtype)
-                        state["lam_O"] = torch.ones(m, device=p.device, dtype=p.dtype)
-                        state["lam_I"] = torch.ones(n, device=p.device, dtype=p.dtype)
-
-        @torch.no_grad()
-        def update_factors(self, name: str, H_O: torch.Tensor | None, H_I: torch.Tensor | None) -> None:
-            clean_name = name.removeprefix("_orig_mod.")
-            p = self._name_to_param.get(clean_name)
-            if p is None or p.dim() != 2:
-                return
-            m, n = p.shape
-            if max(m, n) > self.yaqa_full_dim_threshold:
-                return
-            state = self.state[p]
-            if "H_O" not in state:
-                state["H_O"] = torch.eye(m, device=p.device, dtype=torch.float32)
-                state["H_I"] = torch.eye(n, device=p.device, dtype=torch.float32)
-                state["Q_O"] = torch.eye(m, device=p.device, dtype=p.dtype)
-                state["Q_I"] = torch.eye(n, device=p.device, dtype=p.dtype)
-                state["lam_O"] = torch.ones(m, device=p.device, dtype=p.dtype)
-                state["lam_I"] = torch.ones(n, device=p.device, dtype=p.dtype)
-            beta = self.yaqa_beta2
-            if H_O is not None:
-                state["H_O"].mul_(beta).add_(H_O.to(state["H_O"].device, dtype=torch.float32), alpha=1 - beta)
-            if H_I is not None:
-                state["H_I"].mul_(beta).add_(H_I.to(state["H_I"].device, dtype=torch.float32), alpha=1 - beta)
-
-        @torch.no_grad()
-        def power_iteration_update(self, name: str, g: torch.Tensor, x: torch.Tensor) -> None:
-            """Sketch A: power iteration update using current batch activations/gradients."""
-            clean_name = name.removeprefix("_orig_mod.")
-            p = self._name_to_param.get(clean_name)
-            if p is None or p.dim() != 2:
-                return
-            m, n = p.shape
-            if max(m, n) > self.yaqa_full_dim_threshold:
-                return
-            state = self.state[p]
-            if "H_O" not in state:
-                state["H_O"] = torch.eye(m, device=p.device, dtype=torch.float32)
-                state["H_I"] = torch.eye(n, device=p.device, dtype=torch.float32)
-                state["Q_O"] = torch.eye(m, device=p.device, dtype=p.dtype)
-                state["Q_I"] = torch.eye(n, device=p.device, dtype=p.dtype)
-                state["lam_O"] = torch.ones(m, device=p.device, dtype=p.dtype)
-                state["lam_I"] = torch.ones(n, device=p.device, dtype=p.dtype)
-
-            g_flat = g.reshape(-1, m).float()
-            x_flat = x.reshape(-1, n).float()
-            H_O = state["H_O"]
-            H_I = state["H_I"]
-            beta = self.yaqa_beta2
-            Bt = g_flat.shape[0]
-
-            # Run p steps of power iteration
-            for _ in range(self.yaqa_power_steps):
-                # Update H_I using H_O
-                scalar = torch.einsum("im,mk,ik->i", g_flat, H_O, g_flat)
-                H_I_new = torch.einsum("in,i,ik->nk", x_flat, scalar, x_flat) / (Bt * H_O.norm()**2)
-                H_I.mul_(beta).add_(H_I_new, alpha=1 - beta)
-                # Update H_O using H_I
-                scalar = torch.einsum("in,nk,ik->i", x_flat, H_I, x_flat)
-                H_O_new = torch.einsum("im,i,ik->mk", g_flat, scalar, g_flat) / (Bt * H_I.norm()**2)
-                H_O.mul_(beta).add_(H_O_new, alpha=1 - beta)
-            self._global_step += 1
-
-        @staticmethod
-        @torch.no_grad()
-        def matrix_inv_sqrt_newton_schulz(A: torch.Tensor, num_iters: int) -> torch.Tensor:
-            """Compute A^{-1/2} for symmetric positive-definite A via Denman-Beavers.
-
-            Uses the coupled iteration:
-                Y_{k+1} = 0.5 * Y_k @ (3I - Z_k @ Y_k)
-                Z_{k+1} = 0.5 * (3I - Z_k @ Y_k) @ Z_k
-            Y converges to A^{1/2} / ||A||_F^{1/2}, Z to A^{-1/2} * ||A||_F^{1/2}.
-            """
-            m = A.shape[0]
-            norm = torch.linalg.matrix_norm(A, ord="fro")
-            Y = A / norm
-            Z = torch.eye(m, device=A.device, dtype=A.dtype)
-            I = torch.eye(m, device=A.device, dtype=A.dtype)
-            for _ in range(num_iters):
-                T = 1.5 * I - 0.5 * (Z @ Y)
-                Y = Y @ T
-                Z = T @ Z
-            return Z / torch.sqrt(norm)
+            self.scales: dict[int, torch.Tensor] = {}
+            for n, p in named_params:
+                if p.requires_grad and n in scales:
+                    self.scales[id(p)] = scales[n]
 
         @torch.no_grad()
         def step(self, closure=None):
@@ -1990,10 +1416,18 @@ def run_track1(
                         continue
                     grad = p.grad
                     if grad.is_sparse:
-                        raise RuntimeError("YAQAShampoo does not support sparse gradients")
+                        raise RuntimeError("YAQADiagAdamW does not support sparse gradients")
+
+                    scale = self.scales.get(id(p))
+                    if scale is not None:
+                        if scale.device != grad.device:
+                            scale = scale.to(grad.device)
+                        g = grad * scale
+                    else:
+                        g = grad
 
                     state = self.state[p]
-                    if "step" not in state:
+                    if len(state) == 0:
                         state["step"] = 0
                         state["exp_avg"] = torch.zeros_like(p)
                         state["exp_avg_sq"] = torch.zeros_like(p)
@@ -2003,72 +1437,10 @@ def run_track1(
                     state["step"] += 1
                     step = state["step"]
 
-                    # YAQA full-matrix preconditioning
-                    if "H_O" in state and p.dim() == 2:
-                        m, n = p.shape
-                        # Recompute preconditioner every update_freq steps.
-                        # update_freq=0 means "freeze after step 1" (never recompute).
-                        should_update = (
-                            (self.yaqa_update_freq == 1)
-                            or (self.yaqa_update_freq == 0 and step == 1)
-                            or (self.yaqa_update_freq > 1 and step % self.yaqa_update_freq == 1)
-                            or (step == 1)
-                        )
-                        if should_update:
-                            H_O = state["H_O"]
-                            H_I = state["H_I"]
-                            H_O_damped = H_O + self.yaqa_eps * torch.eye(m, device=H_O.device, dtype=H_O.dtype)
-                            H_I_damped = H_I + self.yaqa_eps * torch.eye(n, device=H_I.device, dtype=H_I.dtype)
-                            if self.yaqa_use_newton_schulz:
-                                try:
-                                    H_O_inv_sqrt = self.matrix_inv_sqrt_newton_schulz(
-                                        H_O_damped, self.yaqa_newton_schulz_iters
-                                    )
-                                    H_I_inv_sqrt = self.matrix_inv_sqrt_newton_schulz(
-                                        H_I_damped, self.yaqa_newton_schulz_iters
-                                    )
-                                    state["H_O_inv_sqrt"] = H_O_inv_sqrt
-                                    state["H_I_inv_sqrt"] = H_I_inv_sqrt
-                                except Exception:
-                                    pass
-                            else:
-                                try:
-                                    lam_O, Q_O = torch.linalg.eigh(H_O_damped)
-                                    lam_I, Q_I = torch.linalg.eigh(H_I_damped)
-                                    lam_O = lam_O.clamp_min(self.yaqa_eps)
-                                    lam_I = lam_I.clamp_min(self.yaqa_eps)
-                                    state["Q_O"] = Q_O.to(p.dtype)
-                                    state["Q_I"] = Q_I.to(p.dtype)
-                                    state["lam_O"] = lam_O.to(p.dtype)
-                                    state["lam_I"] = lam_I.to(p.dtype)
-                                except Exception:
-                                    pass
-                        if self.yaqa_use_newton_schulz:
-                            H_O_inv_sqrt = state["H_O_inv_sqrt"]
-                            H_I_inv_sqrt = state["H_I_inv_sqrt"]
-                            G = grad.to(H_O_inv_sqrt.dtype)
-                            grad = (H_O_inv_sqrt @ G @ H_I_inv_sqrt).to(p.dtype)
-                        else:
-                            Q_O = state["Q_O"]
-                            Q_I = state["Q_I"]
-                            lam_O = state["lam_O"]
-                            lam_I = state["lam_I"]
-                            G = grad.to(Q_O.dtype)
-                            G_tilde = Q_O.T @ G @ Q_I
-                            denom = torch.sqrt(lam_O.unsqueeze(1) * lam_I.unsqueeze(0) + self.yaqa_eps)
-                            G_prec = G_tilde / denom
-                            grad = (Q_O @ G_prec @ Q_I.T).to(p.dtype)
+                    exp_avg.mul_(beta1).add_(g, alpha=1.0 - beta1)
+                    exp_avg_sq.mul_(beta2).addcmul_(g, g, value=1.0 - beta2)
 
-                    # For YAQA-preconditioned params, use yaqa_beta1 (often 0)
-                    # because the Kronecker preconditioner already provides
-                    # directional persistence. For non-YAQA params fall back
-                    # to the default Adam beta1.
-                    effective_beta1 = self.yaqa_beta1 if ("H_O" in state and p.dim() == 2) else beta1
-
-                    exp_avg.mul_(effective_beta1).add_(grad, alpha=1.0 - effective_beta1)
-                    exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1.0 - beta2)
-
-                    bias_correction1 = 1.0 - effective_beta1 ** step
+                    bias_correction1 = 1.0 - beta1 ** step
                     bias_correction2 = 1.0 - beta2 ** step
                     step_size = lr / bias_correction1
                     denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
@@ -2078,6 +1450,8 @@ def run_track1(
 
                     p.addcdiv_(exp_avg, denom, value=-step_size)
             return loss
+
+    yaqa_scales: dict[str, torch.Tensor] = {}
 
     def make_optimizer():
         if resolved_optimizer_name == "adamw8bit":
@@ -2090,16 +1464,14 @@ def run_track1(
                 eps=1.0e-8,
                 weight_decay=weight_decay,
             )
-        if resolved_optimizer_name in {"muon", "muon8", "normuon", "yaqamuon"}:
+        if resolved_optimizer_name in {"muon", "muon8", "normuon"}:
             matrix_params: list[torch.nn.Parameter] = []
-            matrix_named_params: list[tuple[str, torch.nn.Parameter]] = []
             adamw_params: list[torch.nn.Parameter] = []
             for name, parameter in named_trainable_params:
                 clean_name = name.removeprefix("_orig_mod.")
                 is_embed_or_head = any(part in clean_name for part in ("embed", "lm_head"))
                 if parameter.ndim == 2 and not is_embed_or_head:
                     matrix_params.append(parameter)
-                    matrix_named_params.append((name, parameter))
                 else:
                     adamw_params.append(parameter)
 
@@ -2125,21 +1497,6 @@ def run_track1(
                             beta2=normuon_beta2,
                             eps=normuon_eps,
                             weight_decay=weight_decay,
-                        )
-                    )
-                elif resolved_optimizer_name == "yaqamuon":
-                    optimizers.append(
-                        YAQAMuon(
-                            matrix_named_params,
-                            lr=resolved_muon_lr,
-                            momentum=0.95,
-                            weight_decay=weight_decay,
-                            lr_adjustment=muon_lr_adjustment,
-                            yaqa_beta2=yaqa_beta2,
-                            yaqa_update_freq=yaqa_update_freq,
-                            yaqa_eps=yaqa_eps,
-                            yaqa_full_dim_threshold=yaqa_full_dim_threshold,
-                            yaqa_power_steps=yaqa_power_steps,
                         )
                     )
                 else:
@@ -2181,8 +1538,6 @@ def run_track1(
                 optimizers.append(adamw)
             if resolved_optimizer_name == "normuon":
                 details = f"beta1=0.95 beta2={normuon_beta2} eps={normuon_eps}"
-            elif resolved_optimizer_name == "yaqamuon":
-                details = f"lr_adjustment={muon_lr_adjustment} yaqa_threshold={yaqa_full_dim_threshold}"
             else:
                 details = f"lr_adjustment={muon_lr_adjustment}"
             if resolved_optimizer_name == "muon8":
@@ -2194,21 +1549,13 @@ def run_track1(
             )
             return optimizers
         if resolved_optimizer_name == "yaqadamw":
-            return YAQAShampoo(
+            return YAQADiagAdamW(
                 named_trainable_params,
+                scales=yaqa_scales,
                 lr=lr,
                 betas=(0.9, 0.95),
                 eps=1.0e-8,
                 weight_decay=weight_decay,
-                yaqa_beta1=yaqa_beta1,
-                yaqa_beta2=yaqa_beta2,
-                yaqa_update_freq=yaqa_update_freq,
-                yaqa_eps=yaqa_eps,
-                yaqa_full_dim_threshold=yaqa_full_dim_threshold,
-                yaqa_sketch_mode=yaqa_sketch_mode,
-                yaqa_power_steps=yaqa_power_steps,
-                yaqa_use_newton_schulz=yaqa_use_newton_schulz,
-                yaqa_newton_schulz_iters=yaqa_newton_schulz_iters,
             )
         kwargs: dict[str, Any] = {
             "lr": lr,
@@ -2303,9 +1650,6 @@ def run_track1(
         trainable_count = sum(p.numel() for p in trainable_params)
         total_count = sum(p.numel() for p in model.parameters())
 
-    def lowpass_hooks_ctx():
-        return nullcontext()
-
     def run_train_warmup() -> None:
         print("running train/compile warmup", flush=True)
         model.train()
@@ -2317,7 +1661,7 @@ def run_track1(
             input_ids = warmup_batch["input_ids"].to(device, non_blocking=True)
             labels = warmup_batch["labels"].to(device, non_blocking=True)
             position_ids = warmup_batch["position_ids"].to(device, non_blocking=True)
-            with lowpass_hooks_ctx(), torch.autocast("cuda", dtype=torch.bfloat16):
+            with torch.autocast("cuda", dtype=torch.bfloat16):
                 warmup_loss = model(
                     input_ids=input_ids,
                     attention_mask=None,
@@ -2335,234 +1679,9 @@ def run_track1(
         optimizer_zero_grad()
         torch.cuda.synchronize()
 
-    def _yaqa_optimizer_from(opt):
-        if isinstance(opt, (YAQAShampoo, YAQAMuon)):
-            return opt
-        if isinstance(opt, list):
-            for o in opt:
-                if isinstance(o, (YAQAShampoo, YAQAMuon)):
-                    return o
-        return None
-
-    def run_yaqa_burst_collect(steps: int, sketch_mode: str) -> None:
-        print(f"YAQA burst collect: {sketch_mode}, {steps} iterations", flush=True)
-        model.train()
-        yaqa_opt = _yaqa_optimizer_from(optimizer)
-        if yaqa_opt is None:
-            print("YAQA burst collect: no YAQA optimizer found, skipping", flush=True)
-            return
-
-        # For sketch B, zero out existing H_O/H_I so we can accumulate directly
-        # into optimizer state (avoids extra temp memory).
-        _yaqa_counts: dict[str, int] = {}
-        if sketch_mode == "B":
-            for clean_name, p in yaqa_opt._name_to_param.items():
-                if p.dim() != 2 or max(p.shape) > yaqa_full_dim_threshold:
-                    continue
-                state = yaqa_opt.state[p]
-                if "H_O" in state:
-                    state["H_O"].zero_()
-                    state["H_I"].zero_()
-                    _yaqa_counts[clean_name] = 0
-
-        def _fwd_hook(name: str):
-            def hook(module, inputs):
-                module._yaqa_input = inputs[0].detach()
-            return hook
-
-        if sketch_mode == "A":
-            def _bwd_hook(name: str):
-                def hook(module, grad_input, grad_output):
-                    g = grad_output[0]
-                    x = module._yaqa_input
-                    yaqa_opt = _yaqa_optimizer_from(optimizer)
-                    if yaqa_opt is not None:
-                        yaqa_opt.power_iteration_update(name, g, x)
-                    del module._yaqa_input
-                return hook
-        else:
-            def _bwd_hook(name: str):
-                def hook(module, grad_input, grad_output):
-                    g = grad_output[0]
-                    x = module._yaqa_input
-                    G_b = torch.einsum("btm,btn->bmn", g, x).float()
-                    H_O = torch.einsum("bmn,bkn->mk", G_b, G_b) / G_b.shape[0]
-                    H_I = torch.einsum("bmn,bmk->nk", G_b, G_b) / G_b.shape[0]
-                    yaqa_opt = _yaqa_optimizer_from(optimizer)
-                    if yaqa_opt is not None:
-                        clean_name = name.removeprefix("_orig_mod.")
-                        p = yaqa_opt._name_to_param.get(clean_name)
-                        if p is not None and p.dim() == 2 and max(p.shape) <= yaqa_full_dim_threshold:
-                            state = yaqa_opt.state[p]
-                            if "H_O" in state:
-                                state["H_O"].add_(H_O.to(state["H_O"].device, dtype=torch.float32))
-                                state["H_I"].add_(H_I.to(state["H_I"].device, dtype=torch.float32))
-                                _yaqa_counts[clean_name] = _yaqa_counts.get(clean_name, 0) + 1
-                    del module._yaqa_input
-                return hook
-
-        hooks = []
-        for name, module in model.named_modules():
-            if isinstance(module, torch.nn.Linear):
-                if module.weight.requires_grad and module.weight.dim() == 2:
-                    if max(module.weight.shape) <= yaqa_full_dim_threshold:
-                        hooks.append(module.register_forward_pre_hook(_fwd_hook(name)))
-                        hooks.append(module.register_full_backward_hook(_bwd_hook(name)))
-
-        for _ in range(steps):
-            optimizer_zero_grad()
-            batch = next(batch_iter)
-            input_ids = batch["input_ids"].to(device, non_blocking=True)
-            labels = batch["labels"].to(device, non_blocking=True)
-            position_ids = batch["position_ids"].to(device, non_blocking=True)
-            with lowpass_hooks_ctx(), torch.autocast("cuda", dtype=torch.bfloat16):
-                loss = model(
-                    input_ids=input_ids,
-                    attention_mask=None,
-                    position_ids=position_ids,
-                    labels=labels,
-                    use_cache=False,
-                ).loss
-            loss.backward()
-
-        for h in hooks:
-            h.remove()
-
-        # Compute eigenbasis from accumulated factors
-        if sketch_mode == "B":
-            for clean_name, p in yaqa_opt._name_to_param.items():
-                if p.dim() != 2 or max(p.shape) > yaqa_full_dim_threshold:
-                    continue
-                count = _yaqa_counts.get(clean_name, 0)
-                if count == 0:
-                    continue
-                state = yaqa_opt.state[p]
-                if "H_O" not in state:
-                    continue
-                m, n = p.shape
-                state["H_O"].div_(count)
-                state["H_I"].div_(count)
-
-                H_O_damped = state["H_O"] + yaqa_eps * torch.eye(m, device=state["H_O"].device, dtype=state["H_O"].dtype)
-                H_I_damped = state["H_I"] + yaqa_eps * torch.eye(n, device=state["H_I"].device, dtype=state["H_I"].dtype)
-                try:
-                    lam_O, Q_O = torch.linalg.eigh(H_O_damped)
-                    lam_I, Q_I = torch.linalg.eigh(H_I_damped)
-                    lam_O = lam_O.clamp_min(yaqa_eps)
-                    lam_I = lam_I.clamp_min(yaqa_eps)
-                    state["Q_O"] = Q_O.to(p.dtype)
-                    state["Q_I"] = Q_I.to(p.dtype)
-                    state["lam_O"] = lam_O.to(p.dtype)
-                    state["lam_I"] = lam_I.to(p.dtype)
-                except Exception:
-                    pass
-
-        if sketch_mode == "A":
-            for clean_name, p in yaqa_opt._name_to_param.items():
-                if p.dim() != 2 or max(p.shape) > yaqa_full_dim_threshold:
-                    continue
-                state = yaqa_opt.state[p]
-                if "H_O" not in state:
-                    continue
-                m, n = p.shape
-                H_O = state["H_O"]
-                H_I = state["H_I"]
-                H_O_damped = H_O + yaqa_eps * torch.eye(m, device=H_O.device, dtype=H_O.dtype)
-                H_I_damped = H_I + yaqa_eps * torch.eye(n, device=H_I.device, dtype=H_I.dtype)
-                try:
-                    lam_O, Q_O = torch.linalg.eigh(H_O_damped)
-                    lam_I, Q_I = torch.linalg.eigh(H_I_damped)
-                    lam_O = lam_O.clamp_min(yaqa_eps)
-                    lam_I = lam_I.clamp_min(yaqa_eps)
-                    state["Q_O"] = Q_O.to(p.dtype)
-                    state["Q_I"] = Q_I.to(p.dtype)
-                    state["lam_O"] = lam_O.to(p.dtype)
-                    state["lam_I"] = lam_I.to(p.dtype)
-                except Exception:
-                    pass
-
-        optimizer_zero_grad()
-        torch.cuda.synchronize()
-        n_frozen = sum(
-            1 for p in yaqa_opt._name_to_param.values()
-            if p.dim() == 2 and max(p.shape) <= yaqa_full_dim_threshold
-        )
-        print(f"YAQA burst collect: frozen eigenbasis for {n_frozen} layers", flush=True)
-
     baseline_loss = evaluate("baseline_eval")
     compile_warmup_start = time.monotonic()
     log_gpu("compile_warmup_start")
-
-    if lowpass and lowpass_config is not None:
-        # Fixed bases (DCT/Hadamard/Haar/random) don't need data calibration —
-        # basis rows are deterministic and we use --lowpass-max-rank as
-        # the per-layer rank directly.
-        if lowpass_projector_kind != "svd":
-            from lowpass import LowpassLinear as _LowpassLinear
-
-            n_set = 0
-            for module in model.modules():
-                if isinstance(module, _LowpassLinear):
-                    module.set_transform_ranks(
-                        lowpass_max_rank,
-                        lowpass_max_rank if lowpass_compress_gradients else 0,
-                    )
-                    n_set += 1
-            print(
-                f"lowpass: skipped calibration (fixed basis {lowpass_projector_kind}); "
-                f"set rank={lowpass_max_rank} on {n_set} modules",
-                flush=True,
-            )
-        else:
-            from lowpass import calibrate_lowpass
-
-            def _calibration_loss(model_ref, batch):
-                batch_input_ids = batch["input_ids"].to(device, non_blocking=True)
-                batch_labels = batch["labels"].to(device, non_blocking=True)
-                batch_position_ids = batch["position_ids"].to(device, non_blocking=True)
-                with torch.autocast("cuda", dtype=torch.bfloat16):
-                    out = model_ref(
-                        input_ids=batch_input_ids,
-                        attention_mask=None,
-                        position_ids=batch_position_ids,
-                        labels=batch_labels,
-                        use_cache=False,
-                    )
-                return out.loss
-
-            def _calibration_batches():
-                for _ in range(lowpass_calibration_steps):
-                    yield next(batch_iter)
-
-            model.train()
-            print(
-                f"lowpass: calibrating projectors over {lowpass_calibration_steps} steps "
-                f"(projector=svd, energy={lowpass_activation_energy})",
-                flush=True,
-            )
-            calibration_stats = calibrate_lowpass(
-                model,
-                _calibration_batches(),
-                _calibration_loss,
-                steps=lowpass_calibration_steps,
-                config=lowpass_config,
-            )
-            if calibration_stats:
-                a_ranks = sorted({s.activation_rank for s in calibration_stats})
-                g_ranks = sorted({s.gradient_rank for s in calibration_stats})
-                a_energies = [s.activation_selected_energy for s in calibration_stats]
-                g_energies = [s.gradient_selected_energy for s in calibration_stats]
-                a_mean_energy = sum(a_energies) / len(a_energies) if a_energies else 0.0
-                g_mean_energy = sum(g_energies) / len(g_energies) if g_energies else 0.0
-                print(
-                    f"lowpass: calibrated {len(calibration_stats)} modules — "
-                    f"activation_rank∈{a_ranks[:5]}{'...' if len(a_ranks) > 5 else ''}, "
-                    f"gradient_rank∈{g_ranks[:5]}{'...' if len(g_ranks) > 5 else ''}, "
-                    f"mean_act_energy={a_mean_energy:.3f}, mean_grad_energy={g_mean_energy:.3f}",
-                    flush=True,
-                )
-        torch.cuda.synchronize()
-        log_gpu("after_lowpass_calibration")
 
     if compile_model:
         print(f"compiling model with torch.compile(mode={compile_mode!r})", flush=True)
@@ -2607,65 +1726,52 @@ def run_track1(
             run_train_warmup()
 
     # ------------------------------------------------------------------
-    # YAQA online hooks (before budget_start)
+    # YAQA diagonal calibration (untimed — before budget_start)
     # ------------------------------------------------------------------
-    _yaqa_hooks: list = []
-    if resolved_optimizer_name in {"yaqadamw", "yaqamuon"}:
-        yaqa_burst_collected = False
-        if yaqa_burst_collect_steps > 0:
-            run_yaqa_burst_collect(yaqa_burst_collect_steps, yaqa_sketch_mode)
-            yaqa_burst_collected = True
-
-        # If burst-collected and frozen (update_freq==0), skip online hooks entirely
-        attach_online_hooks = not (yaqa_burst_collected and yaqa_update_freq == 0)
-
-        if attach_online_hooks:
-            sketch_label = "Sketch-A" if yaqa_sketch_mode == "A" else "Sketch-B"
-            print(f"attaching YAQA online {sketch_label} hooks (threshold={yaqa_full_dim_threshold})", flush=True)
-            model.train()
-
-            def _yaqa_forward_hook(name: str):
-                def hook(module: torch.nn.Linear, inputs):
-                    module._yaqa_input = inputs[0].detach()
-                return hook
-
-            if yaqa_sketch_mode == "A":
-                def _yaqa_backward_hook(name: str):
-                    def hook(module: torch.nn.Linear, grad_input, grad_output):
-                        g = grad_output[0]  # (B, T, out)
-                        x = module._yaqa_input  # (B, T, in)
-                        yaqa_opt = _yaqa_optimizer_from(optimizer)
-                        if yaqa_opt is not None:
-                            yaqa_opt.power_iteration_update(name, g, x)
-                        del module._yaqa_input
-                    return hook
-            else:
-                def _yaqa_backward_hook(name: str):
-                    def hook(module: torch.nn.Linear, grad_input, grad_output):
-                        g = grad_output[0]  # (B, T, out)
-                        x = module._yaqa_input  # (B, T, in)
-                        G_b = torch.einsum("btm,btn->bmn", g, x).float()
-                        H_O = torch.einsum("bmn,bkn->mk", G_b, G_b) / G_b.shape[0]
-                        H_I = torch.einsum("bmn,bmk->nk", G_b, G_b) / G_b.shape[0]
-                        yaqa_opt = _yaqa_optimizer_from(optimizer)
-                        if yaqa_opt is not None:
-                            yaqa_opt.update_factors(name, H_O, H_I)
-                        del module._yaqa_input
-                    return hook
-
-            for name, module in model.named_modules():
-                if isinstance(module, torch.nn.Linear):
-                    if module.weight.requires_grad and module.weight.dim() == 2:
-                        if max(module.weight.shape) <= yaqa_full_dim_threshold:
-                            _yaqa_hooks.append(module.register_forward_pre_hook(_yaqa_forward_hook(name)))
-                            _yaqa_hooks.append(module.register_full_backward_hook(_yaqa_backward_hook(name)))
-            print(f"YAQA hooks attached: {len(_yaqa_hooks)//2} layers", flush=True)
-            torch.cuda.synchronize()
-            log_gpu("after_yaqa_hooks")
-        else:
-            print("YAQA: skipping online hooks (burst-collected frozen eigenbasis)", flush=True)
-            torch.cuda.synchronize()
-            log_gpu("after_yaqa_hooks")
+    if resolved_optimizer_name == "yaqadamw" and yaqa_mode == "static":
+        print(f"running YAQA diagonal calibration ({yaqa_calib_sequences} sequences)", flush=True)
+        model.train()
+        _yaqa_d_O: dict[str, torch.Tensor] = {}
+        _yaqa_d_I: dict[str, torch.Tensor] = {}
+        _yaqa_counts: dict[str, int] = {}
+        for _ in range(yaqa_calib_sequences):
+            optimizer_zero_grad()
+            batch = next(batch_iter)
+            input_ids = batch["input_ids"].to(device, non_blocking=True)
+            labels = batch["labels"].to(device, non_blocking=True)
+            position_ids = batch["position_ids"].to(device, non_blocking=True)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                calib_loss = model(
+                    input_ids=input_ids,
+                    attention_mask=None,
+                    position_ids=position_ids,
+                    labels=labels,
+                    use_cache=False,
+                ).loss
+            calib_loss.backward()
+            for name, param in model.named_parameters():
+                if param.grad is not None and param.ndim == 2:
+                    g = param.grad.float()
+                    if name not in _yaqa_d_O:
+                        _yaqa_d_O[name] = torch.zeros(g.shape[0], device=g.device, dtype=torch.float32)
+                        _yaqa_d_I[name] = torch.zeros(g.shape[1], device=g.device, dtype=torch.float32)
+                        _yaqa_counts[name] = 0
+                    _yaqa_d_O[name].add_(g.pow(2).sum(dim=1))
+                    _yaqa_d_I[name].add_(g.pow(2).sum(dim=0))
+                    _yaqa_counts[name] += 1
+            optimizer_zero_grad()
+        for name in _yaqa_d_O:
+            d_O = _yaqa_d_O[name] / _yaqa_counts[name]
+            d_I = _yaqa_d_I[name] / _yaqa_counts[name]
+            scale = 1.0 / torch.sqrt(d_O.unsqueeze(1) * d_I.unsqueeze(0) + yaqa_eps)
+            scale.clamp_(min=yaqa_min_scale, max=yaqa_max_scale)
+            yaqa_scales[name] = scale.to(torch.bfloat16)
+        print(f"YAQA calibration complete: {len(yaqa_scales)} layers", flush=True)
+        torch.cuda.synchronize()
+        log_gpu("after_yaqa_calibration")
+        # Rebuild optimizer now that scales are collected.
+        optimizer = make_optimizer()
+        capture_optimizer_base_lrs()
 
     optimizer_zero_grad()
     torch.cuda.reset_peak_memory_stats(gpu_index)
@@ -2715,7 +1821,7 @@ def run_track1(
             input_ids = batch["input_ids"].to(device, non_blocking=True)
             labels = batch["labels"].to(device, non_blocking=True)
             position_ids = batch["position_ids"].to(device, non_blocking=True)
-            with lowpass_hooks_ctx(), torch.autocast("cuda", dtype=torch.bfloat16):
+            with torch.autocast("cuda", dtype=torch.bfloat16):
                 output = model(
                     input_ids=input_ids,
                     attention_mask=None,
@@ -2776,16 +1882,6 @@ def run_track1(
     elapsed_budget_seconds = budget_end - budget_start
     elapsed_train_loop_seconds = budget_end - train_loop_start
     elapsed_compile_warmup_seconds = budget_start - compile_warmup_start
-    train_gpu_stats = collect_gpu_stats()
-    update_peak_gpu_stats(train_gpu_stats)
-    train_peak_gpu_stats = {
-        "train_peak_cuda_memory_allocated_gib": train_gpu_stats.get("cuda_max_memory_allocated_gib"),
-        "train_peak_cuda_memory_reserved_gib": train_gpu_stats.get("cuda_max_memory_reserved_gib"),
-        "train_peak_gpu_memory_used_gib": peak_gpu_stats.get(
-            "peak_gpu_memory_used_gib", train_gpu_stats.get("gpu_memory_used_gib")
-        ),
-    }
-    log_metric({"event": "train_peak_before_final_eval", **train_peak_gpu_stats})
     # Keep post-budget evaluation from triggering a new compiled eval graph.
     model = uncompiled_model
     final_loss = evaluate("final_eval")
@@ -2806,7 +1902,6 @@ def run_track1(
         "elapsed_budget_seconds": elapsed_budget_seconds,
         "elapsed_train_loop_seconds": elapsed_train_loop_seconds,
         "elapsed_train_seconds": elapsed_budget_seconds,
-        **train_peak_gpu_stats,
         "tokens_per_second": tokens / max(elapsed_budget_seconds, 1.0e-9),
         "supervised_tokens_per_second": supervised_tokens_seen / max(elapsed_budget_seconds, 1.0e-9),
         "train_loop_tokens_per_second": tokens / max(elapsed_train_loop_seconds, 1.0e-9),
@@ -2816,8 +1911,6 @@ def run_track1(
         "baseline_eval_loss": baseline_loss,
         "final_eval_loss": final_loss,
         "eval_loss_drop": baseline_loss - final_loss,
-        "ngram_reference_loss": ngram_reference_loss,
-        "random_init_eval_loss": random_init_eval_loss,
     }
 
     if save_final:
@@ -2861,18 +1954,12 @@ def main(
     warmup_steps: int = 20,
     eval_blocks: int = 64,
     eval_micro_batch_size: int = 0,
-    vram_fraction: float = DEFAULT_VRAM_FRACTION,
     seed: int = 1337,
     model_id: str = DEFAULT_MODEL_ID,
     model_revision: str = DEFAULT_MODEL_REVISION,
     dataset_id: str = "",
     dataset_config: str = "",
     dataset_revision: str = "",
-    heldout_eval_dataset_id: str = DEFAULT_HELDOUT_EVAL_DATASET_ID,
-    heldout_eval_dataset_config: str = DEFAULT_HELDOUT_EVAL_DATASET_CONFIG,
-    heldout_eval_dataset_revision: str = DEFAULT_HELDOUT_EVAL_DATASET_REVISION,
-    heldout_eval_split: str = DEFAULT_HELDOUT_EVAL_SPLIT,
-    eval_random_baseline: bool = False,
     cpt_text_field: str = DEFAULT_CPT_TEXT_FIELD,
     data_mode: str = "",
     optimizer_name: str = "auto",
@@ -2883,30 +1970,17 @@ def main(
     normuon_eps: float = DEFAULT_NORMUON_EPS,
     muon_lr: float = 0.0,
     adamw_tail_lr: float = 0.0,
-    yaqa_beta1: float = 0.0,
-    yaqa_beta2: float = 0.95,
-    yaqa_update_freq: int = 10,
-    yaqa_full_dim_threshold: int = 3072,
-    yaqa_eps: float = 1.0e-6,
-    yaqa_sketch_mode: str = "B",
-    yaqa_power_steps: int = 1,
-    yaqa_use_newton_schulz: bool = False,
-    yaqa_newton_schulz_iters: int = 7,
-    yaqa_burst_collect_steps: int = 0,
+    yaqa_mode: str = "static",
+    yaqa_calib_sequences: int = 256,
+    yaqa_min_scale: float = 0.1,
+    yaqa_max_scale: float = 10.0,
+    yaqa_eps: float = 1.0e-8,
     lowpass: bool = False,
-    lowpass_projector_kind: str = "svd",
+    lowpass_projector_kind: str = "dct",
+    lowpass_keep: int = DEFAULT_LOWPASS_KEEP,
     lowpass_target_filter: str = DEFAULT_LOWPASS_TARGET_FILTER,
-    lowpass_min_rank: int = 4,
-    lowpass_max_rank: int = 64,
-    lowpass_activation_energy: float = 0.95,
-    lowpass_gradient_energy: float = 0.95,
-    lowpass_compress_gradients: bool = True,
-    lowpass_exact_input_grad: bool = False,
-    lowpass_activation_storage: str = "float",
-    lowpass_oversample: int = 8,
-    lowpass_power_iterations: int = 2,
-    lowpass_calibration_steps: int = 8,
-    lowpass_calibration_max_columns: int = 2048,
+    lowpass_min_hidden_dim: int = 8000,
+    lowpass_max_hidden_dim: int = 16000,
     lr_schedule: str = "constant",
     lr_decay_fraction: float = 0.1,
     min_lr_ratio: float = 0.0,
@@ -2953,18 +2027,12 @@ def main(
         warmup_steps=warmup_steps,
         eval_blocks=eval_blocks,
         eval_micro_batch_size=eval_micro_batch_size,
-        vram_fraction=vram_fraction,
         seed=seed,
         model_id=model_id,
         model_revision=model_revision,
         dataset_id=dataset_id,
         dataset_config=dataset_config,
         dataset_revision=dataset_revision,
-        heldout_eval_dataset_id=heldout_eval_dataset_id,
-        heldout_eval_dataset_config=heldout_eval_dataset_config,
-        heldout_eval_dataset_revision=heldout_eval_dataset_revision,
-        heldout_eval_split=heldout_eval_split,
-        eval_random_baseline=eval_random_baseline,
         cpt_text_field=cpt_text_field,
         data_mode=data_mode,  # type: ignore[arg-type]
         optimizer_name=optimizer_name,
@@ -2975,30 +2043,17 @@ def main(
         normuon_eps=normuon_eps,
         muon_lr=muon_lr,
         adamw_tail_lr=adamw_tail_lr,
-        yaqa_beta1=yaqa_beta1,
-        yaqa_beta2=yaqa_beta2,
-        yaqa_update_freq=yaqa_update_freq,
-        yaqa_full_dim_threshold=yaqa_full_dim_threshold,
+        yaqa_mode=yaqa_mode,  # type: ignore[arg-type]
+        yaqa_calib_sequences=yaqa_calib_sequences,
+        yaqa_min_scale=yaqa_min_scale,
+        yaqa_max_scale=yaqa_max_scale,
         yaqa_eps=yaqa_eps,
-        yaqa_sketch_mode=yaqa_sketch_mode,  # type: ignore[arg-type]
-        yaqa_power_steps=yaqa_power_steps,
-        yaqa_use_newton_schulz=yaqa_use_newton_schulz,
-        yaqa_newton_schulz_iters=yaqa_newton_schulz_iters,
-        yaqa_burst_collect_steps=yaqa_burst_collect_steps,
         lowpass=lowpass,
         lowpass_projector_kind=lowpass_projector_kind,  # type: ignore[arg-type]
+        lowpass_keep=lowpass_keep,
         lowpass_target_filter=lowpass_target_filter,  # type: ignore[arg-type]
-        lowpass_min_rank=lowpass_min_rank,
-        lowpass_max_rank=lowpass_max_rank,
-        lowpass_activation_energy=lowpass_activation_energy,
-        lowpass_gradient_energy=lowpass_gradient_energy,
-        lowpass_compress_gradients=lowpass_compress_gradients,
-        lowpass_exact_input_grad=lowpass_exact_input_grad,
-        lowpass_activation_storage=lowpass_activation_storage,  # type: ignore[arg-type]
-        lowpass_oversample=lowpass_oversample,
-        lowpass_power_iterations=lowpass_power_iterations,
-        lowpass_calibration_steps=lowpass_calibration_steps,
-        lowpass_calibration_max_columns=lowpass_calibration_max_columns,
+        lowpass_min_hidden_dim=lowpass_min_hidden_dim,
+        lowpass_max_hidden_dim=lowpass_max_hidden_dim,
         lr_schedule=lr_schedule,  # type: ignore[arg-type]
         lr_decay_fraction=lr_decay_fraction,
         min_lr_ratio=min_lr_ratio,

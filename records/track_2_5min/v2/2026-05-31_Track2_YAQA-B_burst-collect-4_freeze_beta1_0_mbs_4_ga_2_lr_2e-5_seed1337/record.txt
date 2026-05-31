@@ -1,0 +1,21 @@
+Track 2 (5min)
+Description: Track2 YAQA-B burst-collect-4 freeze beta1=0 mbs=4 ga=2 lr=2e-5 seed1337
+Contributors:
+Date: 2026-05-31
+Data mode: cpt
+Loss mask: all_tokens
+Eval mode: leading_docs
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 5.0
+Eval loss drop: 0.680617
+Baseline eval loss: 1.021390
+Final eval loss: 0.340773
+Steps: 112
+Tokens: 3,670,016
+Supervised tokens: 3,669,120
+Eval supervised tokens: 262,144
+Compile + warmup (untimed): 241.2s
+Elapsed budget: 301.5s
+Budget tokens/sec: 12171
+Train-loop elapsed: 301.5s
+Train-loop tokens/sec: 12171

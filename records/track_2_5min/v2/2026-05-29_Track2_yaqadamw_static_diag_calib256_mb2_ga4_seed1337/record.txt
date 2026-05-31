@@ -1,0 +1,20 @@
+Track 2 (5min)
+Description: Track2 yaqadamw static diag calib256 mb2 ga4 seed1337
+Contributors:
+Date: 2026-05-29
+Data mode: cpt
+Loss mask: all_tokens
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 5.0
+Eval loss drop: 0.674686
+Baseline eval loss: 1.021390
+Final eval loss: 0.346704
+Steps: 110
+Tokens: 3,604,480
+Supervised tokens: 3,603,600
+Eval supervised tokens: 262,144
+Compile + warmup (untimed): 446.9s
+Elapsed budget: 302.4s
+Budget tokens/sec: 11918
+Train-loop elapsed: 302.4s
+Train-loop tokens/sec: 11918

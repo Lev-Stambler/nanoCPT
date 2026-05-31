@@ -63,7 +63,6 @@ DEFAULT_PACKING_STRATEGY = "stream_concat_no_padding"
 DEFAULT_CPT_TEXT_FIELD = "text"
 DEFAULT_LOWPASS_TARGET_FILTER = "all_no_lmhead"
 LOWPASS_TARGET_FILTER_CHOICES = {"mlp", "all", "all_no_lmhead", "none"}
-LOWPASS_ACTIVATION_STORAGE_CHOICES = {"float", "int8"}
 # VRAM guardrail. Modal's gpu="H100" has returned both the 80 GB HBM3 SKU and a
 # ~93 GB H100 NVL; capping every card to the same byte budget (DEFAULT_VRAM_FRACTION
 # of the 80 GB reference) makes runs behave identically regardless of which SKU is
@@ -308,7 +307,7 @@ image = (
         "git+https://github.com/huggingface/transformers.git",
         extra_options="--no-build-isolation",
     )
-    .add_local_python_source("lowpass", "lowpass_triton")
+    .add_local_python_source("lowpass")
 )
 
 
@@ -456,7 +455,6 @@ def run_track1(
     lowpass_gradient_energy: float = 0.95,
     lowpass_compress_gradients: bool = True,
     lowpass_exact_input_grad: bool = False,
-    lowpass_activation_storage: Literal["float", "int8"] = "float",
     lowpass_oversample: int = 8,
     lowpass_power_iterations: int = 2,
     lowpass_calibration_steps: int = 8,
@@ -572,12 +570,6 @@ def run_track1(
     if lowpass_target_filter not in LOWPASS_TARGET_FILTER_CHOICES:
         raise ValueError(
             f"--lowpass-target-filter must be one of: {', '.join(sorted(LOWPASS_TARGET_FILTER_CHOICES))}"
-        )
-    lowpass_activation_storage = str(lowpass_activation_storage).lower()
-    if lowpass_activation_storage not in LOWPASS_ACTIVATION_STORAGE_CHOICES:
-        raise ValueError(
-            "--lowpass-activation-storage must be one of: "
-            f"{', '.join(sorted(LOWPASS_ACTIVATION_STORAGE_CHOICES))}"
         )
     if lowpass_min_rank < 1:
         raise ValueError("--lowpass-min-rank must be positive")
@@ -848,7 +840,6 @@ def run_track1(
         "lowpass_gradient_energy": lowpass_gradient_energy,
         "lowpass_compress_gradients": bool(lowpass_compress_gradients),
         "lowpass_exact_input_grad": bool(lowpass_exact_input_grad),
-        "lowpass_activation_storage": lowpass_activation_storage,
         "lowpass_oversample": lowpass_oversample,
         "lowpass_power_iterations": lowpass_power_iterations,
         "lowpass_calibration_steps": lowpass_calibration_steps,
@@ -1398,7 +1389,6 @@ def run_track1(
             calibration_max_columns=lowpass_calibration_max_columns,
             exact_input_grad=bool(lowpass_exact_input_grad),
             compress_gradients=bool(lowpass_compress_gradients),
-            activation_storage=lowpass_activation_storage,
         )
         filter_fn = make_module_filter(lowpass_target_filter)
         replaced = replace_linear_with_lowpass(model, lowpass_config, filter_fn)
@@ -1407,8 +1397,7 @@ def run_track1(
             f"(target={lowpass_target_filter}, projector={lowpass_projector_kind}, "
             f"max_rank={lowpass_max_rank}, energy={lowpass_activation_energy}, "
             f"exact_input_grad={bool(lowpass_exact_input_grad)}, "
-            f"compress_gradients={bool(lowpass_compress_gradients)}, "
-            f"activation_storage={lowpass_activation_storage})",
+            f"compress_gradients={bool(lowpass_compress_gradients)})",
             flush=True,
         )
 
@@ -2776,16 +2765,6 @@ def run_track1(
     elapsed_budget_seconds = budget_end - budget_start
     elapsed_train_loop_seconds = budget_end - train_loop_start
     elapsed_compile_warmup_seconds = budget_start - compile_warmup_start
-    train_gpu_stats = collect_gpu_stats()
-    update_peak_gpu_stats(train_gpu_stats)
-    train_peak_gpu_stats = {
-        "train_peak_cuda_memory_allocated_gib": train_gpu_stats.get("cuda_max_memory_allocated_gib"),
-        "train_peak_cuda_memory_reserved_gib": train_gpu_stats.get("cuda_max_memory_reserved_gib"),
-        "train_peak_gpu_memory_used_gib": peak_gpu_stats.get(
-            "peak_gpu_memory_used_gib", train_gpu_stats.get("gpu_memory_used_gib")
-        ),
-    }
-    log_metric({"event": "train_peak_before_final_eval", **train_peak_gpu_stats})
     # Keep post-budget evaluation from triggering a new compiled eval graph.
     model = uncompiled_model
     final_loss = evaluate("final_eval")
@@ -2806,7 +2785,6 @@ def run_track1(
         "elapsed_budget_seconds": elapsed_budget_seconds,
         "elapsed_train_loop_seconds": elapsed_train_loop_seconds,
         "elapsed_train_seconds": elapsed_budget_seconds,
-        **train_peak_gpu_stats,
         "tokens_per_second": tokens / max(elapsed_budget_seconds, 1.0e-9),
         "supervised_tokens_per_second": supervised_tokens_seen / max(elapsed_budget_seconds, 1.0e-9),
         "train_loop_tokens_per_second": tokens / max(elapsed_train_loop_seconds, 1.0e-9),
@@ -2902,7 +2880,6 @@ def main(
     lowpass_gradient_energy: float = 0.95,
     lowpass_compress_gradients: bool = True,
     lowpass_exact_input_grad: bool = False,
-    lowpass_activation_storage: str = "float",
     lowpass_oversample: int = 8,
     lowpass_power_iterations: int = 2,
     lowpass_calibration_steps: int = 8,
@@ -2994,7 +2971,6 @@ def main(
         lowpass_gradient_energy=lowpass_gradient_energy,
         lowpass_compress_gradients=lowpass_compress_gradients,
         lowpass_exact_input_grad=lowpass_exact_input_grad,
-        lowpass_activation_storage=lowpass_activation_storage,  # type: ignore[arg-type]
         lowpass_oversample=lowpass_oversample,
         lowpass_power_iterations=lowpass_power_iterations,
         lowpass_calibration_steps=lowpass_calibration_steps,

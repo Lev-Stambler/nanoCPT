@@ -57,6 +57,55 @@ class ForwardParityTest(unittest.TestCase):
         self.assertTrue(torch.allclose(y_ref, y_lp, atol=1e-6, rtol=1e-6))
 
 
+class ActivationStorageTest(unittest.TestCase):
+    @_skip_if_no_torch
+    def test_rejects_unknown_activation_storage(self):
+        with self.assertRaises(ValueError):
+            LowpassConfig(activation_storage="fp8")
+
+    @_skip_if_no_torch
+    def test_int8_storage_matches_float_storage(self):
+        torch.manual_seed(2026)
+        config_float = LowpassConfig(
+            projector_kind="dct",
+            max_rank=16,
+            min_rank=4,
+            exact_input_grad=True,
+            compress_gradients=False,
+            activation_storage="float",
+        )
+        config_int8 = LowpassConfig(
+            projector_kind="dct",
+            max_rank=16,
+            min_rank=4,
+            exact_input_grad=True,
+            compress_gradients=False,
+            activation_storage="int8",
+        )
+        linear_float = nn.Linear(64, 96, bias=True)
+        linear_int8 = nn.Linear(64, 96, bias=True)
+        linear_int8.load_state_dict(linear_float.state_dict())
+        lp_float = LowpassLinear.from_linear(linear_float, config_float)
+        lp_int8 = LowpassLinear.from_linear(linear_int8, config_int8)
+
+        x = torch.randn(2, 64, 64)
+        x_float = x.detach().clone().requires_grad_(True)
+        x_int8 = x.detach().clone().requires_grad_(True)
+        y_float = lp_float(x_float)
+        y_int8 = lp_int8(x_int8)
+        self.assertTrue(torch.allclose(y_float, y_int8, atol=1e-6, rtol=1e-6))
+
+        grad_out = torch.randn_like(y_float)
+        y_float.backward(grad_out)
+        y_int8.backward(grad_out)
+        self.assertTrue(torch.allclose(x_float.grad, x_int8.grad, atol=1e-6, rtol=1e-6))
+
+        rms_ref = lp_float.weight.grad.pow(2).mean().sqrt()
+        rms_err = (lp_int8.weight.grad - lp_float.weight.grad).pow(2).mean().sqrt()
+        rel_err = (rms_err / rms_ref).item()
+        self.assertLess(rel_err, 0.08, msg=f"INT8 storage grad_w RMS-rel error {rel_err:.3f} > 0.08")
+
+
 class ExactInputGradTest(unittest.TestCase):
     """With exact_input_grad=True grad_x = grad_output @ weight exactly."""
 

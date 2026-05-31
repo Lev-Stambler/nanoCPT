@@ -1,0 +1,21 @@
+Track 2 (5min)
+Description: Track2 YAQA-B freeze-after-step1 beta1=0 mbs=4 ga=2 lr=2e-5 seed1337 REPRO
+Contributors:
+Date: 2026-05-31
+Data mode: cpt
+Loss mask: all_tokens
+Eval mode: leading_docs
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 5.0
+Eval loss drop: 0.680030
+Baseline eval loss: 1.021390
+Final eval loss: 0.341360
+Steps: 111
+Tokens: 3,637,248
+Supervised tokens: 3,636,360
+Eval supervised tokens: 262,144
+Compile + warmup (untimed): 277.7s
+Elapsed budget: 301.2s
+Budget tokens/sec: 12075
+Train-loop elapsed: 301.2s
+Train-loop tokens/sec: 12075
