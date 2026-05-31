@@ -41,6 +41,28 @@ class CptTextFieldDefaultTest(unittest.TestCase):
         self.assertEqual(main.DEFAULT_CPT_TEXT_FIELD, "text")
 
 
+class CptDatasetDefaultTest(unittest.TestCase):
+    def test_default_is_hard_typo2_dataset(self) -> None:
+        self.assertEqual(main.DEFAULT_DATASET_ID, "TearedModels/conlangcrafter-cpt-bd412d52-hard-typo2")
+        self.assertEqual(main.DEFAULT_DATASET_REVISION, "c8aae01b831778315a2522cf20f5111f4ab7b903")
+        self.assertEqual(main.EVAL_VERSION, "v3")
+
+    def test_clean_conlang_is_legacy_only(self) -> None:
+        self.assertEqual(main.LEGACY_CONLANG_DATASET_ID, "TearedModels/conlangcrafter-cpt-bd412d52")
+        self.assertEqual(main.LEGACY_CONLANG_DATASET_REVISION, "5cfd047a92023011326e8383d45d97db22add909")
+        self.assertNotEqual(main.DEFAULT_DATASET_ID, main.LEGACY_CONLANG_DATASET_ID)
+
+
+class LegacyEntrypointTest(unittest.TestCase):
+    def test_legacy_targets_live_under_legacy_directory(self) -> None:
+        root_run = (ROOT / "run.sh").read_text(encoding="utf-8")
+        legacy_run = (ROOT / "legacy" / "run.sh").read_text(encoding="utf-8")
+
+        self.assertNotIn("legacy-conlang-track", root_run)
+        self.assertIn("clean-conlang-track2", legacy_run)
+        self.assertIn(main.LEGACY_CONLANG_DATASET_ID, legacy_run)
+
+
 class HeldoutEvalDefaultsTest(unittest.TestCase):
     """The held-out eval feature must be OFF by default so existing runs and
     cached eval tensors are unaffected."""
@@ -139,6 +161,11 @@ class GeneratorHardeningTest(unittest.TestCase):
         b = mod.inject_typos(text, 0.1, _random.Random(123))
         self.assertEqual(a, b, "same seed -> same corruption")
         self.assertNotEqual(a, text, "typos should change the text")
+
+    def test_typo_rng_is_chunk_deterministic(self) -> None:
+        mod = _load_synth_module()
+        self.assertEqual(mod.typo_rng(1337, 42).random(), mod.typo_rng(1337, 42).random())
+        self.assertNotEqual(mod.typo_rng(1337, 42).random(), mod.typo_rng(1337, 43).random())
 
 
 class LocalConlangParquetTest(unittest.TestCase):

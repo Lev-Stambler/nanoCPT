@@ -329,6 +329,11 @@ def inject_typos(text: str, rate: float, rng: random.Random) -> str:
     return "".join(out)
 
 
+def typo_rng(seed: int, chunk_id: int) -> random.Random:
+    """Stable per-chunk RNG for typo injection across resumes."""
+    return random.Random(f"{seed}:{chunk_id}")
+
+
 @dataclass
 class QualityGate:
     min_chars: int
@@ -513,7 +518,7 @@ async def run_loop(
             # text). Seed per-chunk so the corruption is reproducible across
             # resumes regardless of completion order.
             if typo_rate > 0.0:
-                text = inject_typos(text, typo_rate, random.Random((seed, task.chunk_id)))
+                text = inject_typos(text, typo_rate, typo_rng(seed, task.chunk_id))
             row = {
                 "text": text,
                 "topic": task.topic,

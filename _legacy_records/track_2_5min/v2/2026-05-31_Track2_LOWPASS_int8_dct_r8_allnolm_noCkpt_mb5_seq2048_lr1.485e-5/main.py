@@ -29,9 +29,9 @@ HF_CACHE = CACHE_MOUNT / "huggingface"
 
 DEFAULT_MODEL_ID = "Qwen/Qwen3.5-4B-Base"
 DEFAULT_MODEL_REVISION = "1001bb4d826a52d1f399e183466143f4da7b741b"
-DEFAULT_DATASET_ID = "TearedModels/conlangcrafter-cpt-bd412d52-hard-typo2"
+DEFAULT_DATASET_ID = "TearedModels/conlangcrafter-cpt-bd412d52"
 DEFAULT_DATASET_CONFIG = ""
-DEFAULT_DATASET_REVISION = "c8aae01b831778315a2522cf20f5111f4ab7b903"
+DEFAULT_DATASET_REVISION = "5cfd047a92023011326e8383d45d97db22add909"
 # Held-out generalization eval (CPT only). Empty = legacy behavior: the eval
 # blocks are sliced from the leading documents of the training stream (same
 # generator/topics/lexicon as train), so the metric measures distribution-fitting
@@ -42,11 +42,6 @@ DEFAULT_HELDOUT_EVAL_DATASET_ID = ""
 DEFAULT_HELDOUT_EVAL_DATASET_CONFIG = ""
 DEFAULT_HELDOUT_EVAL_DATASET_REVISION = ""
 DEFAULT_HELDOUT_EVAL_SPLIT = "train"
-# Legacy clean conlang corpus used by v1/v2 records. Keep as an explicit
-# opt-in only so the current default cannot silently fall back to the easy data.
-LEGACY_CONLANG_DATASET_ID = "TearedModels/conlangcrafter-cpt-bd412d52"
-LEGACY_CONLANG_DATASET_CONFIG = ""
-LEGACY_CONLANG_DATASET_REVISION = "5cfd047a92023011326e8383d45d97db22add909"
 # Legacy CPT dataset — kept so the records under records/track_1_30min/2026-05-*
 # can be reproduced. Pass --dataset-id explicitly to use it.
 LEGACY_CPT_DATASET_ID = "HuggingFaceTB/finemath"
@@ -75,13 +70,13 @@ LOWPASS_ACTIVATION_STORAGE_CHOICES = {"float", "int8"}
 # scheduled, and leaves headroom so transient spikes don't OOM.
 DEFAULT_VRAM_FRACTION = 0.92
 # torch `total_memory / 2**30` for the 80 GB HBM3 card; matches the
-# `gpu_total_memory_gib` recorded in the v2/v3 records' summary.json.
+# `gpu_total_memory_gib` recorded in the v2 records' summary.json.
 H100_80GB_TOTAL_MEMORY_GIB = 79.1788
 # Eval-correctness version. Bump when a change alters absolute eval-loss
 # numbers (e.g. document-aware attention masking, eval-set tokenization
 # changes). Records under records/<track>/v<N>/ are only comparable within
 # the same version.
-EVAL_VERSION = "v3"
+EVAL_VERSION = "v2"
 
 DATA_MODE_CHOICES = {"sft", "cpt"}
 OPTIMIZER_CHOICES = {

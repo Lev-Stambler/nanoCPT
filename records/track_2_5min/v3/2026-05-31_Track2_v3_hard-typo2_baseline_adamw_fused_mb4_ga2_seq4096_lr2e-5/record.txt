@@ -1,0 +1,21 @@
+Track 2 (5min)
+Description: Track2 v3 hard-typo2 baseline adamw_fused mb4 ga2 seq4096 lr2e-5
+Contributors: @levstamb
+Date: 2026-05-31
+Data mode: cpt
+Loss mask: all_tokens
+Eval mode: leading_docs
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 5.0
+Eval loss drop: 0.708906
+Baseline eval loss: 1.242502
+Final eval loss: 0.533596
+Steps: 114
+Tokens: 3,735,552
+Supervised tokens: 3,734,640
+Eval supervised tokens: 262,144
+Compile + warmup (untimed): 346.6s
+Elapsed budget: 302.5s
+Budget tokens/sec: 12350
+Train-loop elapsed: 302.5s
+Train-loop tokens/sec: 12350

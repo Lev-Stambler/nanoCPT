@@ -54,19 +54,6 @@ case "${1:-}" in
       --wandb-mode disabled \
       "$@"
     ;;
-  # Escape hatches for reproducing pre-conlang records.
-  legacy-cpt-track1)
-    shift
-    exec "${cmd[@]}" --track 1 \
-      --dataset-id HuggingFaceTB/finemath \
-      --dataset-config finemath-4plus \
-      --dataset-revision e92b25a616738fe95dc186b64dfb19f9c8525594 \
-      "$@"
-    ;;
-  legacy-sft-track1)
-    shift
-    exec "${cmd[@]}" --track 1 --data-mode sft "$@"
-    ;;
   *)
     exec "${cmd[@]}" "$@"
     ;;

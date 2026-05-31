@@ -22,8 +22,11 @@ high baseline loss and a much larger achievable drop.
 A constructed language synthesized one-shot via Vertex AI Gemini 3.5 Flash
 against a [ConlangCrafter](https://arxiv.org/abs/2508.06094) language spec
 (`bd412d52`, DeepSeek-R1-generated, 131 lexicon words, polysynthetic, IPA
-with tones and clicks). Published as
+with tones and clicks). The original clean corpus was published as
 [`TearedModels/conlangcrafter-cpt-bd412d52`](https://huggingface.co/datasets/TearedModels/conlangcrafter-cpt-bd412d52).
+The current v3 default is the regenerated 2% typo-noised variant
+[`TearedModels/conlangcrafter-cpt-bd412d52-hard-typo2`](https://huggingface.co/datasets/TearedModels/conlangcrafter-cpt-bd412d52-hard-typo2)
+at revision `c8aae01b831778315a2522cf20f5111f4ab7b903`.
 
 ### Why this and not alternatives
 
@@ -59,7 +62,20 @@ with tones and clicks). Published as
 - 1607s (27 min) wallclock at concurrency 32.
 - Cost: ~$5–20 on Flash pricing.
 
+### Hard-regeneration stats (v3 default, 2026-05-31)
+
+- Same `bd412d52` spec and Vertex `gemini-3.5-flash` prose generator.
+- `--variant hard_typo2_20260531 --typo-rate 0.02 --target-tokens 10_000_000 --concurrency 32`.
+- 3,079 chunks accepted, 0 final rejects; 101 short and 58 English-ratio
+  first-attempt rejects were retried.
+- 13.25M chars after typo injection; 1642s wallclock.
+- Published as `TearedModels/conlangcrafter-cpt-bd412d52-hard-typo2`.
+
 ## Results
+
+Current v3 hard-typo2 Track 2 baseline: AdamW fused full fine-tune, lr
+2e-5, mb 4 × ga 2, seq4096, seed 1337 scored **+0.7089** (baseline
+1.2425 → final 0.5336) in 114 steps on H100 SXM5.
 
 ### Track 2 — 5 minutes
 
@@ -256,12 +272,14 @@ source ~/.config/.env.global   # provides VERTEXAI_PROJECT etc.
 uv run python scripts/synthesize_conlang_cpt.py --smoke
 
 # 2. Full corpus generation (~30 min, ~$5-20 on Flash).
-uv run python scripts/synthesize_conlang_cpt.py --target-tokens 10_000_000 --concurrency 32
+uv run python scripts/synthesize_conlang_cpt.py \
+  --language-id bd412d52 --variant hard_typo2_<date> \
+  --target-tokens 10_000_000 --concurrency 32 --typo-rate 0.02
 
 # 3. Publish to HF.
 uv run python scripts/push_conlang_dataset.py data/conlang_cpt/<language_id>
 
-# 4. Train (main.py defaults to TearedModels/conlangcrafter-cpt-bd412d52,
+# 4. Train (main.py defaults to TearedModels/conlangcrafter-cpt-bd412d52-hard-typo2,
 #    so the canonical commands "just work"). Override --dataset-id to
 #    use your own corpus.
 ./run.sh track2                  # 5-min sprint

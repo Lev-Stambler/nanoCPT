@@ -11,14 +11,16 @@ language corpus that the base model has never seen.
 score = baseline_eval_loss − final_eval_loss
 ```
 
-Higher is better. The current Track 2 record (v2 / doc-aware) is **+0.6766**.
+Higher is better. The current Track 2 record is **+0.7089** on v3; the
+retired v2 doc-aware record was **+0.6766** on the easier clean corpus.
 
 ## Leaderboard
 
 Records are versioned by `EVAL_VERSION` in `main.py`. Each version bump
 indicates a correctness-affecting change to the eval/attention/packing
-path; numbers are only comparable **within a single version**. Records
-live under `records/<track>/v<N>/`.
+path; numbers are only comparable **within a single version**. Current
+records live under `records/<track>/v<N>/`; retired records live under
+`_legacy_records/<track>/v<N>/`.
 
 ### Track 1 — 30 minutes
 
@@ -26,13 +28,23 @@ live under `records/<track>/v<N>/`.
 |---|---:|---|---|---|---|
 | 1 | — | (open) | — | — | — |
 
-### Track 2 — 5 minutes (v2 — doc-aware packed attention)
+### Track 2 — 5 minutes (v3 — hard typo-noised corpus)
 
 | # | Loss drop | Description | Date | Log | Contributors |
 |---|---:|---|---|---|---|
-| 1 | **+0.6766** | Full FT, AdamW fused, lr 2e-5, mb 8 × ga 1 (96.2% VRAM), seed 1337, doc-aware position_ids reset at every document start, flex-attention, max-autotune-no-cudagraphs | 2026-05-29 | [summary](records/track_2_5min/v2/2026-05-29_Track2_docaware_adamw_fused_mb8_ga1_max95VRAM_rebaseline_seed1337/summary.json) | @levstamb |
-| 2 | +0.6773 | Full FT, AdamW fused, mb 4 × ga 2 (78.8% VRAM) | 2026-05-29 | [summary](records/track_2_5min/v2/2026-05-29_Track2_docaware_adamw_fused_mb4_ga2_highVRAM_rebaseline_seed1337/summary.json) | @levstamb |
-| 3 | +0.6730 | Full FT, AdamW fused, mb 1 × ga 8 (67.9% VRAM) — archived v2 anchor | 2026-05-29 | [summary](records/track_2_5min/v2/2026-05-29_Track2_docaware_adamw_fused_seed1337/summary.json) | @levstamb |
+| 1 | **+0.7089** | Full FT, AdamW fused, lr 2e-5, mb 4 × ga 2, seq4096, seed 1337, hard typo-noised corpus | 2026-05-31 | [summary](records/track_2_5min/v3/2026-05-31_Track2_v3_hard-typo2_baseline_adamw_fused_mb4_ga2_seq4096_lr2e-5/summary.json) | @levstamb |
+
+### Track 2 — 5 minutes (v2 — doc-aware packed attention, retired)
+
+v2 used the clean `TearedModels/conlangcrafter-cpt-bd412d52` corpus. v3
+switches to the regenerated 2% typo-noised corpus, so v2 numbers are not
+comparable to the current leaderboard.
+
+| # | Loss drop | Description | Date | Log | Contributors |
+|---|---:|---|---|---|---|
+| 1 | **+0.6766** | Full FT, AdamW fused, lr 2e-5, mb 8 × ga 1 (96.2% VRAM), seed 1337, doc-aware position_ids reset at every document start, flex-attention, max-autotune-no-cudagraphs | 2026-05-29 | [summary](_legacy_records/track_2_5min/v2/2026-05-29_Track2_docaware_adamw_fused_mb8_ga1_max95VRAM_rebaseline_seed1337/summary.json) | @levstamb |
+| 2 | +0.6773 | Full FT, AdamW fused, mb 4 × ga 2 (78.8% VRAM) | 2026-05-29 | [summary](_legacy_records/track_2_5min/v2/2026-05-29_Track2_docaware_adamw_fused_mb4_ga2_highVRAM_rebaseline_seed1337/summary.json) | @levstamb |
+| 3 | +0.6730 | Full FT, AdamW fused, mb 1 × ga 8 (67.9% VRAM) — archived v2 anchor | 2026-05-29 | [summary](_legacy_records/track_2_5min/v2/2026-05-29_Track2_docaware_adamw_fused_seed1337/summary.json) | @levstamb |
 
 ### Track 2 — 5 minutes (v1 — leaky causal attention, retired)
 
@@ -40,14 +52,14 @@ Earlier records ran with a uniform `attention_mask=ones` on packed
 sequences, letting later-document tokens attend to earlier-document
 tokens in the same pack. That artificially lowered the baseline eval
 loss by ~0.2; numbers are not comparable to v2 above. Kept under
-`records/track_2_5min/v1/` for historical reference only.
+`_legacy_records/track_2_5min/v1/` for historical reference only.
 
 | # | Loss drop | Description | Date | Log | Contributors |
 |---|---:|---|---|---|---|
-| 1 | +0.4972 | Full FT, AdamW fused, lr 2e-5, mb 1 × ga 8 | 2026-05-28 | [summary](records/track_2_5min/v1/2026-05-28_Track2_adamw_fused_full-FT_seed1337/summary.json) | @levstamb |
-| 2 | +0.4868 | Muon8 hybrid (muon-lr 2e-4, adamw-tail-lr 2e-5) | 2026-05-28 | [summary](records/track_2_5min/v1/2026-05-28_Track2_muon8_hybrid_full-FT_seed1337/summary.json) | @levstamb |
-| 3 | +0.4862 | Muon hybrid (muon-lr 2e-4, adamw-tail-lr 2e-5) | 2026-05-28 | [summary](records/track_2_5min/v1/2026-05-28_Track2_muon_hybrid_full-FT_seed1337/summary.json) | @levstamb |
-| 4 | +0.4612 | NorMuon hybrid (muon-lr 2e-4, adamw-tail-lr 2e-5) | 2026-05-28 | [summary](records/track_2_5min/v1/2026-05-28_Track2_normuon_hybrid_full-FT_seed1337/summary.json) | @levstamb |
+| 1 | +0.4972 | Full FT, AdamW fused, lr 2e-5, mb 1 × ga 8 | 2026-05-28 | [summary](_legacy_records/track_2_5min/v1/2026-05-28_Track2_adamw_fused_full-FT_seed1337/summary.json) | @levstamb |
+| 2 | +0.4868 | Muon8 hybrid (muon-lr 2e-4, adamw-tail-lr 2e-5) | 2026-05-28 | [summary](_legacy_records/track_2_5min/v1/2026-05-28_Track2_muon8_hybrid_full-FT_seed1337/summary.json) | @levstamb |
+| 3 | +0.4862 | Muon hybrid (muon-lr 2e-4, adamw-tail-lr 2e-5) | 2026-05-28 | [summary](_legacy_records/track_2_5min/v1/2026-05-28_Track2_muon_hybrid_full-FT_seed1337/summary.json) | @levstamb |
+| 4 | +0.4612 | NorMuon hybrid (muon-lr 2e-4, adamw-tail-lr 2e-5) | 2026-05-28 | [summary](_legacy_records/track_2_5min/v1/2026-05-28_Track2_normuon_hybrid_full-FT_seed1337/summary.json) | @levstamb |
 
 ### Track 3 — 2 hours
 
@@ -58,9 +70,11 @@ loss by ~0.2; numbers are not comparable to v2 above. Kept under
 ## The challenge
 
 The base model is `Qwen3.5-4B-Base`. The training data is
-[`TearedModels/conlangcrafter-cpt-bd412d52`](https://huggingface.co/datasets/TearedModels/conlangcrafter-cpt-bd412d52)
+[`TearedModels/conlangcrafter-cpt-bd412d52-hard-typo2`](https://huggingface.co/datasets/TearedModels/conlangcrafter-cpt-bd412d52-hard-typo2)
 — ~11M tokens of native prose in a constructed language generated by Vertex
-Gemini against a [ConlangCrafter](https://arxiv.org/abs/2508.06094) spec.
+Gemini against a [ConlangCrafter](https://arxiv.org/abs/2508.06094) spec,
+with 2% character-level typo noise in the train corpus to slow easy
+memorization.
 Because the language was synthesized post-pretraining-cutoff, Qwen has never
 seen it. That gives a large, clean OOD signal to optimize against.
 
@@ -81,14 +95,15 @@ as `elapsed_compile_warmup_seconds` in `summary.json`.
 
 The default eval set is sliced from the leading documents of the **same**
 training corpus, so it shares the conlang's small lexicon and topic seeds. The
-`eval_loss_drop` it reports therefore measures *distribution-fitting* — and on
-the current corpus it saturates within ~5 minutes. To measure *generalization*
+`eval_loss_drop` it reports therefore measures *distribution-fitting*; the
+retired clean corpus saturated within ~5 minutes. To measure *generalization*
 to unseen text, point the eval at a separate corpus generated from the **same
 grammar** but a different seed and disjoint topics:
 
 ```bash
 # 0. (Optional) regenerate the train corpus — typos are ON by default (2%):
-uv run python scripts/synthesize_conlang_cpt.py --language-id bd412d52
+uv run python scripts/synthesize_conlang_cpt.py \
+  --language-id bd412d52 --variant hard_typo2_<date> --target-tokens 10_000_000 --concurrency 32
 
 # 1. Generate a held-out corpus (same grammar, disjoint topics; typos are
 #    force-disabled for --topic-set heldout so the eval stays clean):
@@ -186,13 +201,14 @@ model-aware optimizations, packing strategy, mixed precision — is fair game.
 | Input | Value | Revision |
 |---|---|---|
 | Model | `Qwen/Qwen3.5-4B-Base` | `1001bb4d826a52d1f399e183466143f4da7b741b` |
-| CPT dataset | `TearedModels/conlangcrafter-cpt-bd412d52` | `5cfd047a92023011326e8383d45d97db22add909` |
+| CPT dataset | `TearedModels/conlangcrafter-cpt-bd412d52-hard-typo2` | `c8aae01b831778315a2522cf20f5111f4ab7b903` |
 | CPT split | `train` | — |
 
-All public and ungated. The legacy `HuggingFaceTB/finemath` and
-`HuggingFaceH4/ultrachat_200k` paths still work via `./run.sh
-legacy-cpt-track1` and `./run.sh legacy-sft-track1` for reproducing
-pre-conlang records under `records/`.
+All public and ungated. The legacy clean conlang dataset
+`TearedModels/conlangcrafter-cpt-bd412d52`, `HuggingFaceTB/finemath`, and
+`HuggingFaceH4/ultrachat_200k` paths still work via explicit `--dataset-id`
+or the wrappers under [`legacy/`](legacy/README.md) for reproducing older
+records under `_legacy_records/`.
 
 ## Architecture
 
