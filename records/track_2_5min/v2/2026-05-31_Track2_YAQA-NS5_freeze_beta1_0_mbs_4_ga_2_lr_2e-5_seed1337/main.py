@@ -470,8 +470,6 @@ def run_track1(
     compile_warmup: bool = True,
     save_final: bool = False,
     log_every: int = 5,
-    input_benchmark_batches: int = 0,
-    input_benchmark_warmup_batches: int = 8,
     wandb_project: str = "",
     wandb_entity: str = "",
     wandb_name: str = "",
@@ -520,10 +518,6 @@ def run_track1(
         raise ValueError("--eval-blocks must be positive")
     if warmup_steps < 0:
         raise ValueError("--warmup-steps must be non-negative")
-    if input_benchmark_batches < 0:
-        raise ValueError("--input-benchmark-batches must be non-negative")
-    if input_benchmark_warmup_batches < 0:
-        raise ValueError("--input-benchmark-warmup-batches must be non-negative")
     if lr < 0:
         raise ValueError("--lr must be non-negative; use 0 for the mode default")
     if weight_decay < 0.0 and weight_decay != -1.0:
@@ -869,8 +863,6 @@ def run_track1(
         "compile_mode": compile_mode,
         "compile_warmup": compile_warmup,
         "save_final": save_final,
-        "input_benchmark_batches": input_benchmark_batches,
-        "input_benchmark_warmup_batches": input_benchmark_warmup_batches,
         "wandb_enabled": wandb_enabled,
         "wandb_project": wandb_project,
         "wandb_entity": wandb_entity,
@@ -1327,82 +1319,6 @@ def run_track1(
                     if len(batch) == active_batch_size:
                         yield make_batch()
             ds = dataset_stream(shuffle=False).skip(train_skip_docs).shuffle(seed=seed, buffer_size=10_000)
-
-    if input_benchmark_batches > 0:
-        device = torch.device("cuda")
-        batch_iter_for_benchmark = train_batches()
-        for _ in range(input_benchmark_warmup_batches):
-            warmup_batch = next(batch_iter_for_benchmark)
-            warmup_input_ids = warmup_batch["input_ids"].to(device, non_blocking=True)
-            warmup_labels = warmup_batch["labels"].to(device, non_blocking=True)
-            warmup_position_ids = warmup_batch["position_ids"].to(device, non_blocking=True)
-            torch.cuda.synchronize()
-            del warmup_input_ids, warmup_labels, warmup_position_ids, warmup_batch
-
-        torch.cuda.reset_peak_memory_stats(gpu_index)
-        peak_gpu_stats.clear()
-        log_gpu("input_benchmark_start")
-
-        build_seconds = 0.0
-        transfer_seconds = 0.0
-        tokens = 0
-        supervised_tokens_seen = 0
-        benchmark_start = time.monotonic()
-        for _ in range(input_benchmark_batches):
-            build_start = time.monotonic()
-            batch = next(batch_iter_for_benchmark)
-            build_end = time.monotonic()
-            build_seconds += build_end - build_start
-
-            input_ids = batch["input_ids"]
-            labels = batch["labels"]
-            position_ids = batch["position_ids"]
-            tokens += int(input_ids.numel())
-            supervised_tokens_seen += _supervised_token_count(labels)
-
-            transfer_start = time.monotonic()
-            device_input_ids = input_ids.to(device, non_blocking=True)
-            device_labels = labels.to(device, non_blocking=True)
-            device_position_ids = position_ids.to(device, non_blocking=True)
-            torch.cuda.synchronize()
-            transfer_end = time.monotonic()
-            transfer_seconds += transfer_end - transfer_start
-            del device_input_ids, device_labels, device_position_ids, batch
-
-        total_seconds = time.monotonic() - benchmark_start
-        cpu_overhead_seconds = max(0.0, total_seconds - build_seconds - transfer_seconds)
-        benchmark_gpu_stats = collect_gpu_stats()
-        update_peak_gpu_stats(benchmark_gpu_stats)
-        summary = {
-            **config,
-            **peak_gpu_stats,
-            "record_date": dt.date.today().isoformat(),
-            "run_dir": str(run_dir),
-            "eval_cache": str(eval_path),
-            "train_skip_docs": train_skip_docs,
-            "eval_supervised_tokens": eval_supervised_tokens,
-            "input_benchmark_tokens": tokens,
-            "input_benchmark_supervised_tokens": supervised_tokens_seen,
-            "input_benchmark_build_seconds": build_seconds,
-            "input_benchmark_transfer_seconds": transfer_seconds,
-            "input_benchmark_cpu_overhead_seconds": cpu_overhead_seconds,
-            "input_benchmark_total_seconds": total_seconds,
-            "input_benchmark_batches_per_second": input_benchmark_batches / max(total_seconds, 1.0e-9),
-            "input_benchmark_build_tokens_per_second": tokens / max(build_seconds, 1.0e-9),
-            "input_benchmark_build_supervised_tokens_per_second": supervised_tokens_seen
-            / max(build_seconds, 1.0e-9),
-            "input_benchmark_transfer_tokens_per_second": tokens / max(transfer_seconds, 1.0e-9),
-            "input_benchmark_total_tokens_per_second": tokens / max(total_seconds, 1.0e-9),
-            "input_benchmark_total_supervised_tokens_per_second": supervised_tokens_seen
-            / max(total_seconds, 1.0e-9),
-        }
-        (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=_json_default) + "\n")
-        log_metric({"event": "input_benchmark", **summary}, include_gpu=True)
-        if wandb_run is not None:
-            wandb_run.summary.update(summary)
-            wandb_run.finish()
-        cache_volume.commit()
-        return summary
 
     device = torch.device("cuda")
 
@@ -3000,8 +2916,6 @@ def main(
     compile_warmup: bool = True,
     save_final: bool = False,
     log_every: int = 5,
-    input_benchmark_batches: int = 0,
-    input_benchmark_warmup_batches: int = 8,
     wandb_project: str = "modded-continued-training",
     wandb_entity: str = "umd-leans-well",
     wandb_name: str = "",
@@ -3094,8 +3008,6 @@ def main(
         compile_warmup=compile_warmup,
         save_final=save_final,
         log_every=log_every,
-        input_benchmark_batches=input_benchmark_batches,
-        input_benchmark_warmup_batches=input_benchmark_warmup_batches,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
         wandb_name=wandb_name,

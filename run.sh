@@ -42,6 +42,18 @@ case "${1:-}" in
     shift
     exec "${cmd[@]}" --track 3 "$@"
     ;;
+  input-bench)
+    shift
+    exec "${cmd[@]}" --track 2 \
+      --seq-len 2048 \
+      --micro-batch-size 5 \
+      --grad-accum 1 \
+      --eval-micro-batch-size 1 \
+      --input-benchmark-batches 256 \
+      --input-benchmark-warmup-batches 16 \
+      --wandb-mode disabled \
+      "$@"
+    ;;
   # Escape hatches for reproducing pre-conlang records.
   legacy-cpt-track1)
     shift
