@@ -18,10 +18,8 @@ retired v2 doc-aware record was **+0.6766** on the easier clean corpus.
 
 Records are versioned by `EVAL_VERSION` in `main.py`. Each version bump
 indicates a correctness-affecting change to the eval/attention/packing
-path; numbers are only comparable **within a single version**. Current
-records live under `records/<track>/v<N>/`; retired records live under
-`_legacy_records/<track>/v<N>/`.
-
+path; numbers are only comparable **within a single version**. Current and retired records live under
+`records/<track>/v<N>/`.
 ### Track 1 — 30 minutes
 
 | # | Loss drop | Description | Date | Log | Contributors |
@@ -42,9 +40,9 @@ comparable to the current leaderboard.
 
 | # | Loss drop | Description | Date | Log | Contributors |
 |---|---:|---|---|---|---|
-| 1 | **+0.6766** | Full FT, AdamW fused, lr 2e-5, mb 8 × ga 1 (96.2% VRAM), seed 1337, doc-aware position_ids reset at every document start, flex-attention, max-autotune-no-cudagraphs | 2026-05-29 | [summary](_legacy_records/track_2_5min/v2/2026-05-29_Track2_docaware_adamw_fused_mb8_ga1_max95VRAM_rebaseline_seed1337/summary.json) | @levstamb |
-| 2 | +0.6773 | Full FT, AdamW fused, mb 4 × ga 2 (78.8% VRAM) | 2026-05-29 | [summary](_legacy_records/track_2_5min/v2/2026-05-29_Track2_docaware_adamw_fused_mb4_ga2_highVRAM_rebaseline_seed1337/summary.json) | @levstamb |
-| 3 | +0.6730 | Full FT, AdamW fused, mb 1 × ga 8 (67.9% VRAM) — archived v2 anchor | 2026-05-29 | [summary](_legacy_records/track_2_5min/v2/2026-05-29_Track2_docaware_adamw_fused_seed1337/summary.json) | @levstamb |
+| 1 | **+0.6766** | Full FT, AdamW fused, lr 2e-5, mb 8 × ga 1 (96.2% VRAM), seed 1337, doc-aware position_ids reset at every document start, flex-attention, max-autotune-no-cudagraphs | 2026-05-29 | [summary](records/track_2_5min/v2/2026-05-29_Track2_docaware_adamw_fused_mb8_ga1_max95VRAM_rebaseline_seed1337/summary.json) | @levstamb |
+| 2 | +0.6773 | Full FT, AdamW fused, mb 4 × ga 2 (78.8% VRAM) | 2026-05-29 | [summary](records/track_2_5min/v2/2026-05-29_Track2_docaware_adamw_fused_mb4_ga2_highVRAM_rebaseline_seed1337/summary.json) | @levstamb |
+| 3 | +0.6730 | Full FT, AdamW fused, mb 1 × ga 8 (67.9% VRAM) — archived v2 anchor | 2026-05-29 | [summary](records/track_2_5min/v2/2026-05-29_Track2_docaware_adamw_fused_seed1337/summary.json) | @levstamb |
 
 ### Track 2 — 5 minutes (v1 — leaky causal attention, retired)
 
@@ -52,14 +50,14 @@ Earlier records ran with a uniform `attention_mask=ones` on packed
 sequences, letting later-document tokens attend to earlier-document
 tokens in the same pack. That artificially lowered the baseline eval
 loss by ~0.2; numbers are not comparable to v2 above. Kept under
-`_legacy_records/track_2_5min/v1/` for historical reference only.
+`records/track_2_5min/v1/` for historical reference only.
 
 | # | Loss drop | Description | Date | Log | Contributors |
 |---|---:|---|---|---|---|
-| 1 | +0.4972 | Full FT, AdamW fused, lr 2e-5, mb 1 × ga 8 | 2026-05-28 | [summary](_legacy_records/track_2_5min/v1/2026-05-28_Track2_adamw_fused_full-FT_seed1337/summary.json) | @levstamb |
-| 2 | +0.4868 | Muon8 hybrid (muon-lr 2e-4, adamw-tail-lr 2e-5) | 2026-05-28 | [summary](_legacy_records/track_2_5min/v1/2026-05-28_Track2_muon8_hybrid_full-FT_seed1337/summary.json) | @levstamb |
-| 3 | +0.4862 | Muon hybrid (muon-lr 2e-4, adamw-tail-lr 2e-5) | 2026-05-28 | [summary](_legacy_records/track_2_5min/v1/2026-05-28_Track2_muon_hybrid_full-FT_seed1337/summary.json) | @levstamb |
-| 4 | +0.4612 | NorMuon hybrid (muon-lr 2e-4, adamw-tail-lr 2e-5) | 2026-05-28 | [summary](_legacy_records/track_2_5min/v1/2026-05-28_Track2_normuon_hybrid_full-FT_seed1337/summary.json) | @levstamb |
+| 1 | +0.4972 | Full FT, AdamW fused, lr 2e-5, mb 1 × ga 8 | 2026-05-28 | [summary](records/track_2_5min/v1/2026-05-28_Track2_adamw_fused_full-FT_seed1337/summary.json) | @levstamb |
+| 2 | +0.4868 | Muon8 hybrid (muon-lr 2e-4, adamw-tail-lr 2e-5) | 2026-05-28 | [summary](records/track_2_5min/v1/2026-05-28_Track2_muon8_hybrid_full-FT_seed1337/summary.json) | @levstamb |
+| 3 | +0.4862 | Muon hybrid (muon-lr 2e-4, adamw-tail-lr 2e-5) | 2026-05-28 | [summary](records/track_2_5min/v1/2026-05-28_Track2_muon_hybrid_full-FT_seed1337/summary.json) | @levstamb |
+| 4 | +0.4612 | NorMuon hybrid (muon-lr 2e-4, adamw-tail-lr 2e-5) | 2026-05-28 | [summary](records/track_2_5min/v1/2026-05-28_Track2_normuon_hybrid_full-FT_seed1337/summary.json) | @levstamb |
 
 ### Track 3 — 2 hours
 
@@ -207,8 +205,6 @@ model-aware optimizations, packing strategy, mixed precision — is fair game.
 All public and ungated. The legacy clean conlang dataset
 `TearedModels/conlangcrafter-cpt-bd412d52`, `HuggingFaceTB/finemath`, and
 `HuggingFaceH4/ultrachat_200k` paths still work via explicit `--dataset-id`
-or the wrappers under [`legacy/`](legacy/README.md) for reproducing older
-records under `_legacy_records/`.
 
 ## Architecture
 
