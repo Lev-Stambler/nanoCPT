@@ -417,7 +417,10 @@ def _project_chunked_fixed_token_basis(kind: str, x: Tensor, rank: int, chunk_si
             pass
     chunk_count = x.shape[-2] // chunk_size
     x_chunks = x.reshape(*x.shape[:-2], chunk_count, chunk_size, x.shape[-1])
-    projected = torch.einsum("rl,...klc->...krc", coefficients, x_chunks)
+    projected_flat = x_chunks.transpose(-2, -1).reshape(-1, chunk_size).matmul(coefficients.T)
+    projected = projected_flat.reshape(*x.shape[:-2], chunk_count, x.shape[-1], local_rank).transpose(
+        -2, -1
+    )
     return projected.reshape(*x.shape[:-2], chunk_count * local_rank, x.shape[-1])
 
 
@@ -443,7 +446,10 @@ def _unproject_chunked_fixed_token_basis(
         )
     coefficients = _chunked_basis_coefficients(kind, chunk_size, local_rank, x_hat.device, x_hat.dtype)
     x_hat_chunks = x_hat.reshape(*x_hat.shape[:-2], chunk_count, local_rank, x_hat.shape[-1])
-    restored = torch.einsum("rl,...krc->...klc", coefficients, x_hat_chunks)
+    restored_flat = x_hat_chunks.transpose(-2, -1).reshape(-1, local_rank).matmul(coefficients)
+    restored = restored_flat.reshape(
+        *x_hat.shape[:-2], chunk_count, x_hat.shape[-1], chunk_size
+    ).transpose(-2, -1)
     return restored.reshape(*x_hat.shape[:-2], seq_len, x_hat.shape[-1])
 
 
@@ -767,10 +773,8 @@ class _LowpassLinearFunction(torch.autograd.Function):
                 )
             else:
                 go_for_w = torch.einsum("rl,...lo->...ro", p, go)
-            grad_weight = torch.einsum(
-                "nro,nri->oi",
-                go_for_w.reshape(-1, go_for_w.shape[-2], go_for_w.shape[-1]),
-                x_hat.reshape(-1, x_hat.shape[-2], x_hat.shape[-1]),
+            grad_weight = go_for_w.reshape(-1, go_for_w.shape[-1]).T.matmul(
+                x_hat.reshape(-1, x_hat.shape[-1])
             ).to(ctx.weight_dtype)
 
         if ctx.needs_input_grad[0]:
