@@ -119,6 +119,14 @@ absolute eval-loss numbers, bump `EVAL_VERSION` in `main.py` and start a
 new `records/<track>/v<N+1>/` subdirectory — only same-version records
 are directly comparable.
 
+## Iterate with `--no-compile-model` when touching new code paths
+
+When adding a new feature (optimizer, schedule, lowpass variant, etc.)
+run your first few iterations with `--no-compile-model --no-compile-warmup`
+(or use `run.sh smoke`).  `torch.compile` adds minutes of autotune time
+and obscures whether a bug is in your logic or in the compiled graph.
+Only turn compilation back on once the plain-Python path runs correctly.
+
 ## Run wiring sanity-check after the timed boundary
 
 `run.sh smoke` is the canonical end-to-end check that the

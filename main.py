@@ -292,6 +292,8 @@ image = (
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
             "TOKENIZERS_PARALLELISM": "true",
             "TORCH_CUDA_ARCH_LIST": "9.0",
+            "TORCHINDUCTOR_CACHE_DIR": "/cache/torchinductor",
+            "TORCHINDUCTOR_FX_GRAPH_CACHE": "1",
         }
     )
     .apt_install("build-essential", "git", "ninja-build")
@@ -476,7 +478,7 @@ def run_track1(
     min_lr_ratio: float = 0.0,
     attn_implementation: Literal["flex_attention", "flash_attention_2", "sdpa", "eager"] = "flex_attention",
     compile_model: bool = True,
-    compile_mode: str = "max-autotune-no-cudagraphs",
+    compile_mode: str = "default",
     compile_warmup: bool = True,
     save_final: bool = False,
     log_every: int = 5,
@@ -3134,7 +3136,7 @@ def main(
     min_lr_ratio: float = 0.0,
     attn_implementation: str = "flex_attention",
     compile_model: bool = True,
-    compile_mode: str = "max-autotune-no-cudagraphs",
+    compile_mode: str = "default",
     compile_warmup: bool = True,
     save_final: bool = False,
     log_every: int = 5,
