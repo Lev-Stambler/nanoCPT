@@ -1,0 +1,21 @@
+Track 2 (5min)
+Description: Track2 v3 YAQA-NS5 freeze+diag lr=4e-5
+Contributors: 
+Date: 2026-06-01
+Data mode: cpt
+Loss mask: all_tokens
+Eval mode: leading_docs
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 5.0
+Eval loss drop: 0.668865
+Baseline eval loss: 1.242502
+Final eval loss: 0.573637
+Steps: 113
+Tokens: 3,702,784
+Supervised tokens: 3,701,880
+Eval supervised tokens: 262,144
+Compile + warmup (untimed): 244.8s
+Elapsed budget: 300.5s
+Budget tokens/sec: 12320
+Train-loop elapsed: 300.5s
+Train-loop tokens/sec: 12320
