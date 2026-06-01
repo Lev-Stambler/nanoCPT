@@ -1,0 +1,21 @@
+Track 2 (5min)
+Description: Track2 v3 YAQA lr=3.5e-5
+Contributors: 
+Date: 2026-06-01
+Data mode: cpt
+Loss mask: all_tokens
+Eval mode: leading_docs
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 5.0
+Eval loss drop: 0.676060
+Baseline eval loss: 1.242502
+Final eval loss: 0.566442
+Steps: 111
+Tokens: 3,637,248
+Supervised tokens: 3,636,360
+Eval supervised tokens: 262,144
+Compile + warmup (untimed): 285.5s
+Elapsed budget: 301.5s
+Budget tokens/sec: 12063
+Train-loop elapsed: 301.5s
+Train-loop tokens/sec: 12063
