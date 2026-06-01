@@ -178,6 +178,117 @@ def _piecewise_project_quantize_int8_kernel(
     tl.store(scale_ptr + scale_offsets, scale, mask=offs_r < rank)
 
 
+@triton.jit
+def _chunked_project_kernel(
+    x_ptr,
+    coeff_ptr,
+    out_ptr,
+    n_items: tl.constexpr,
+    seq_len: tl.constexpr,
+    channels: tl.constexpr,
+    rank: tl.constexpr,
+    chunk_size: tl.constexpr,
+    chunk_count: tl.constexpr,
+    total_rank: tl.constexpr,
+    BLOCK_R: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+    BLOCK_L: tl.constexpr,
+):
+    pid_n = tl.program_id(0)
+    pid_r = tl.program_id(1)
+    pid_c = tl.program_id(2)
+
+    offs_out_r = pid_r * BLOCK_R + tl.arange(0, BLOCK_R)
+    offs_c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    offs_l = tl.arange(0, BLOCK_L)
+    chunk_idx = (pid_r * BLOCK_R) // rank
+    local_r = offs_out_r - chunk_idx * rank
+
+    accum = tl.zeros((BLOCK_R, BLOCK_C), dtype=tl.float32)
+    for start_l in range(0, chunk_size, BLOCK_L):
+        cur_l = start_l + offs_l
+        coeff = tl.load(
+            coeff_ptr + local_r[:, None] * chunk_size + cur_l[None, :],
+            mask=(offs_out_r[:, None] < total_rank) & (cur_l[None, :] < chunk_size),
+            other=0.0,
+        )
+        absolute_l = chunk_idx * chunk_size + cur_l
+        x_vals = tl.load(
+            x_ptr + pid_n * seq_len * channels + absolute_l[:, None] * channels + offs_c[None, :],
+            mask=(absolute_l[:, None] < seq_len) & (offs_c[None, :] < channels),
+            other=0.0,
+        )
+        accum += tl.dot(coeff, x_vals, input_precision="ieee", out_dtype=tl.float32)
+
+    valid = (offs_out_r[:, None] < total_rank) & (offs_c[None, :] < channels)
+    out_offsets = pid_n * total_rank * channels + offs_out_r[:, None] * channels + offs_c[None, :]
+    tl.store(out_ptr + out_offsets, accum, mask=valid)
+
+
+@triton.jit
+def _chunked_project_quantize_int8_kernel(
+    x_ptr,
+    coeff_ptr,
+    q_ptr,
+    scale_ptr,
+    n_items: tl.constexpr,
+    seq_len: tl.constexpr,
+    channels: tl.constexpr,
+    rank: tl.constexpr,
+    chunk_size: tl.constexpr,
+    chunk_count: tl.constexpr,
+    total_rank: tl.constexpr,
+    num_channel_blocks: tl.constexpr,
+    BLOCK_R: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+    BLOCK_L: tl.constexpr,
+):
+    pid_n = tl.program_id(0)
+    pid_r = tl.program_id(1)
+    pid_c = tl.program_id(2)
+
+    offs_out_r = pid_r * BLOCK_R + tl.arange(0, BLOCK_R)
+    offs_c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    offs_l = tl.arange(0, BLOCK_L)
+    chunk_idx = (pid_r * BLOCK_R) // rank
+    local_r = offs_out_r - chunk_idx * rank
+
+    accum = tl.zeros((BLOCK_R, BLOCK_C), dtype=tl.float32)
+    for start_l in range(0, chunk_size, BLOCK_L):
+        cur_l = start_l + offs_l
+        coeff = tl.load(
+            coeff_ptr + local_r[:, None] * chunk_size + cur_l[None, :],
+            mask=(offs_out_r[:, None] < total_rank) & (cur_l[None, :] < chunk_size),
+            other=0.0,
+        )
+        absolute_l = chunk_idx * chunk_size + cur_l
+        x_vals = tl.load(
+            x_ptr + pid_n * seq_len * channels + absolute_l[:, None] * channels + offs_c[None, :],
+            mask=(absolute_l[:, None] < seq_len) & (offs_c[None, :] < channels),
+            other=0.0,
+        )
+        accum += tl.dot(coeff, x_vals, input_precision="ieee", out_dtype=tl.float32)
+
+    valid = (offs_out_r[:, None] < total_rank) & (offs_c[None, :] < channels)
+    abs_accum = tl.where(valid, tl.abs(accum), 0.0)
+    scale = tl.maximum(tl.max(abs_accum, axis=1) / 127.0, 1.1754943508222875e-38)
+    scaled = tl.clamp(accum / scale[:, None], -127.0, 127.0)
+    q_i32 = tl.inline_asm_elementwise(
+        "cvt.rni.s32.f32 $0, $1;",
+        "=r,f",
+        [scaled],
+        dtype=tl.int32,
+        is_pure=True,
+        pack=1,
+    )
+    q = q_i32.to(tl.int8)
+
+    q_offsets = pid_n * total_rank * channels + offs_out_r[:, None] * channels + offs_c[None, :]
+    tl.store(q_ptr + q_offsets, q, mask=valid)
+    scale_offsets = pid_n * total_rank * num_channel_blocks + offs_out_r * num_channel_blocks + pid_c
+    tl.store(scale_ptr + scale_offsets, scale, mask=offs_out_r < total_rank)
+
+
 def is_available() -> bool:
     return torch.cuda.is_available()
 
@@ -313,6 +424,116 @@ def piecewise_project_quantize_int8(
         rank,
         segment_count,
         int(segment_len),
+        num_channel_blocks,
+        BLOCK_R=block_r,
+        BLOCK_C=block_channels,
+        BLOCK_L=64,
+        num_warps=4,
+        num_stages=4,
+    )
+    return q, scales
+
+
+def chunked_project(
+    x: torch.Tensor,
+    coefficients: torch.Tensor,
+    *,
+    chunk_size: int,
+    block_channels: int = 64,
+) -> torch.Tensor:
+    """Project each fixed-size token chunk by the same local basis."""
+    if not x.is_cuda or not coefficients.is_cuda:
+        raise ValueError("chunked_project requires CUDA tensors")
+    if x.ndim != 3 or coefficients.ndim != 2:
+        raise ValueError(
+            f"expected x [N,L,C] and coefficients [R,K], got {tuple(x.shape)} and {tuple(coefficients.shape)}"
+        )
+    chunk_size = int(chunk_size)
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    x_work = x.contiguous()
+    coeff_work = coefficients.contiguous()
+    n_items, seq_len, channels = x_work.shape
+    rank, coeff_chunk_size = coeff_work.shape
+    if coeff_chunk_size != chunk_size:
+        raise ValueError(f"coefficients use K={coeff_chunk_size}, expected chunk_size={chunk_size}")
+    if seq_len % chunk_size != 0:
+        raise ValueError(f"sequence length {seq_len} is not divisible by chunk_size {chunk_size}")
+    chunk_count = seq_len // chunk_size
+    total_rank = chunk_count * rank
+    block_channels = max(16, int(block_channels))
+    out = torch.empty((n_items, total_rank, channels), device=x.device, dtype=x.dtype)
+    block_r = 16
+    while block_r > 1 and rank % block_r != 0:
+        block_r //= 2
+    grid = (n_items, triton.cdiv(total_rank, block_r), triton.cdiv(channels, block_channels))
+    _chunked_project_kernel[grid](
+        x_work,
+        coeff_work,
+        out,
+        n_items,
+        seq_len,
+        channels,
+        rank,
+        chunk_size,
+        chunk_count,
+        total_rank,
+        BLOCK_R=block_r,
+        BLOCK_C=block_channels,
+        BLOCK_L=64,
+        num_warps=4,
+        num_stages=4,
+    )
+    return out
+
+
+def chunked_project_quantize_int8(
+    x: torch.Tensor,
+    coefficients: torch.Tensor,
+    *,
+    chunk_size: int,
+    block_channels: int = 64,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute local chunk projections and store blockwise symmetric INT8."""
+    if not x.is_cuda or not coefficients.is_cuda:
+        raise ValueError("chunked_project_quantize_int8 requires CUDA tensors")
+    if x.ndim != 3 or coefficients.ndim != 2:
+        raise ValueError(
+            f"expected x [N,L,C] and coefficients [R,K], got {tuple(x.shape)} and {tuple(coefficients.shape)}"
+        )
+    chunk_size = int(chunk_size)
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    x_work = x.contiguous()
+    coeff_work = coefficients.contiguous()
+    n_items, seq_len, channels = x_work.shape
+    rank, coeff_chunk_size = coeff_work.shape
+    if coeff_chunk_size != chunk_size:
+        raise ValueError(f"coefficients use K={coeff_chunk_size}, expected chunk_size={chunk_size}")
+    if seq_len % chunk_size != 0:
+        raise ValueError(f"sequence length {seq_len} is not divisible by chunk_size {chunk_size}")
+    chunk_count = seq_len // chunk_size
+    total_rank = chunk_count * rank
+    block_channels = max(16, int(block_channels))
+    num_channel_blocks = triton.cdiv(channels, block_channels)
+    q = torch.empty((n_items, total_rank, channels), device=x.device, dtype=torch.int8)
+    scales = torch.empty((n_items, total_rank, num_channel_blocks), device=x.device, dtype=torch.float32)
+    block_r = 16
+    while block_r > 1 and rank % block_r != 0:
+        block_r //= 2
+    grid = (n_items, triton.cdiv(total_rank, block_r), num_channel_blocks)
+    _chunked_project_quantize_int8_kernel[grid](
+        x_work,
+        coeff_work,
+        q,
+        scales,
+        n_items,
+        seq_len,
+        channels,
+        rank,
+        chunk_size,
+        chunk_count,
+        total_rank,
         num_channel_blocks,
         BLOCK_R=block_r,
         BLOCK_C=block_channels,

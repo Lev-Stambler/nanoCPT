@@ -16,6 +16,9 @@ try:
     from lowpass import (
         LowpassConfig,
         LowpassLinear,
+        _dequantize_symmetric_int8,
+        _fixed_projector,
+        _project_fixed_token_basis,
         make_module_filter,
         mlp_module_filter,
         replace_linear_with_lowpass,
@@ -158,6 +161,105 @@ class ParamGradToleranceTest(unittest.TestCase):
         rel_err = (rms_err / rms_ref).item()
         # rank 8 of seq 128 keeps 6.25% of basis; bound at 50% RMS-rel.
         self.assertLess(rel_err, 0.50, msg=f"param grad RMS-rel error {rel_err:.3f} > 0.50")
+
+    @_skip_if_no_torch
+    def test_chunked_dct_full_local_rank_matches_linear_grad(self):
+        config = LowpassConfig(
+            projector_kind="dct",
+            max_rank=16,
+            min_rank=4,
+            chunk_size=16,
+            exact_input_grad=True,
+            compress_gradients=False,
+        )
+        baseline, lp = _make_linear_and_lowpass(64, 96, config)
+
+        x = torch.randn(2, 64, 64, requires_grad=True)
+        y_ref = baseline(x)
+        grad_out = torch.randn_like(y_ref)
+        baseline.zero_grad()
+        y_ref.backward(grad_out)
+        ref_grad_w = baseline.weight.grad.clone()
+
+        x2 = x.detach().clone().requires_grad_(True)
+        y_lp = lp(x2)
+        lp.weight.grad = None
+        y_lp.backward(grad_out)
+        self.assertTrue(torch.allclose(ref_grad_w, lp.weight.grad, atol=2e-4, rtol=2e-4))
+
+    @_skip_if_no_torch
+    def test_chunked_dct_weight_grad_uses_block_diagonal_basis(self):
+        torch.manual_seed(17)
+        config = LowpassConfig(
+            projector_kind="dct",
+            max_rank=4,
+            min_rank=4,
+            chunk_size=8,
+            exact_input_grad=True,
+            compress_gradients=False,
+        )
+        _baseline, lp = _make_linear_and_lowpass(8, 12, config)
+
+        x = torch.randn(2, 16, 8, requires_grad=True)
+        grad_out = torch.randn(2, 16, 12)
+        lp(x).backward(grad_out)
+
+        basis = _fixed_projector("dct", 8, 4, x.device, x.dtype)
+        x_hat = torch.einsum("rl,nklc->nkrc", basis, x.detach().reshape(2, 2, 8, 8))
+        go_hat = torch.einsum("rl,nklo->nkro", basis, grad_out.reshape(2, 2, 8, 12))
+        expected = torch.einsum(
+            "nkro,nkri->oi",
+            go_hat,
+            x_hat,
+        )
+        self.assertTrue(torch.allclose(expected, lp.weight.grad, atol=1e-5, rtol=1e-5))
+
+
+class ChunkedProjectionTest(unittest.TestCase):
+    @_skip_if_no_torch
+    def test_chunked_dct_projects_each_chunk_independently(self):
+        x = torch.randn(2, 64, 32)
+        whole = _project_fixed_token_basis("dct", x, rank=8, chunk_size=0)
+        chunked = _project_fixed_token_basis("dct", x, rank=8, chunk_size=16)
+        self.assertEqual(tuple(whole.shape), (2, 8, 32))
+        self.assertEqual(tuple(chunked.shape), (2, 32, 32))
+
+
+class ChunkedTritonProjectionTest(unittest.TestCase):
+    @_skip_if_no_torch
+    def test_chunked_dct_triton_matches_reference(self):
+        if not torch.cuda.is_available():
+            raise unittest.SkipTest("CUDA unavailable")
+        try:
+            from lowpass_triton import chunked_project, chunked_project_quantize_int8
+        except ImportError as exc:
+            raise unittest.SkipTest(f"Triton unavailable: {exc}") from exc
+
+        torch.manual_seed(2027)
+        x = torch.randn(2, 128, 33, device="cuda", dtype=torch.float32)
+        basis = _fixed_projector("dct", 16, 8, x.device, x.dtype)
+        expected = torch.einsum("rl,nklc->nkrc", basis, x.reshape(2, 8, 16, 33)).reshape(
+            2, 64, 33
+        )
+
+        projected = chunked_project(x, basis, chunk_size=16, block_channels=16)
+        self.assertTrue(torch.allclose(projected, expected, atol=1e-5, rtol=1e-5))
+
+        q, scales = chunked_project_quantize_int8(x, basis, chunk_size=16, block_channels=16)
+        dequantized = _dequantize_symmetric_int8(q, scales, torch.float32)
+        expected_q = torch.empty_like(q)
+        expected_scales = torch.empty_like(scales)
+        for block_index, start in enumerate(range(0, expected.shape[-1], 16)):
+            block = expected[..., start : start + 16]
+            scale = block.abs().amax(dim=-1).div(127.0).clamp_min(torch.finfo(torch.float32).tiny)
+            expected_scales[..., block_index] = scale
+            expected_q[..., start : start + 16] = (
+                block.div(scale.unsqueeze(-1)).round().clamp(-127, 127).to(torch.int8)
+            )
+        self.assertTrue(torch.allclose(scales, expected_scales, atol=1e-5, rtol=1e-5))
+        self.assertTrue(torch.all((q.to(torch.int16) - expected_q.to(torch.int16)).abs() <= 1))
+        rel = (dequantized - expected).pow(2).mean().sqrt() / expected.pow(2).mean().sqrt()
+        self.assertLess(float(rel), 0.02)
 
 
 class FallbackOn2DInputTest(unittest.TestCase):

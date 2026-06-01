@@ -1,0 +1,21 @@
+Track 1 (30min)
+Description: SIDE smoke chunked dct r16 chunk64 exactGrad
+Contributors: 
+Date: 2026-06-01
+Data mode: cpt
+Loss mask: all_tokens
+Eval mode: leading_docs
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 0.1
+Eval loss drop: 0.008650
+Baseline eval loss: 1.300726
+Final eval loss: 1.292076
+Steps: 1
+Tokens: 16,384
+Supervised tokens: 16,263
+Eval supervised tokens: 8,065
+Compile + warmup (untimed): 0.0s
+Elapsed budget: 77.4s
+Budget tokens/sec: 212
+Train-loop elapsed: 77.4s
+Train-loop tokens/sec: 212

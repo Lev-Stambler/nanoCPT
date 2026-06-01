@@ -66,6 +66,7 @@ class LowpassConfig:
     exact_input_grad: bool = False
     compress_gradients: bool = True
     activation_storage: str = "float"
+    chunk_size: int = 0
     enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -75,6 +76,10 @@ class LowpassConfig:
             raise ValueError(f"unknown projector_kind {self.projector_kind!r}")
         if self.activation_storage not in {"float", "int8"}:
             raise ValueError(f"unknown activation_storage {self.activation_storage!r}")
+        if self.chunk_size < 0:
+            raise ValueError("chunk_size must be non-negative")
+        if self.chunk_size > 0 and self.projector_kind != "dct":
+            raise ValueError("chunk_size currently requires projector_kind='dct'")
         if self.min_rank < 1:
             raise ValueError("min_rank must be >= 1")
         if self.max_rank < 1:
@@ -380,7 +385,71 @@ def _fixed_projector(
     return projector
 
 
-def _project_fixed_token_basis(kind: str, x: Tensor, rank: int) -> Tensor:
+def _chunked_basis_coefficients(
+    kind: str,
+    chunk_size: int,
+    rank: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tensor:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if kind != "dct":
+        raise ValueError("chunked fixed token basis currently supports only dct")
+    return _fixed_projector(kind, chunk_size, min(max(int(rank), 0), chunk_size), device, dtype)
+
+
+def _project_chunked_fixed_token_basis(kind: str, x: Tensor, rank: int, chunk_size: int) -> Tensor:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if x.shape[-2] % chunk_size != 0:
+        raise ValueError(f"sequence length {x.shape[-2]} is not divisible by chunk_size {chunk_size}")
+    local_rank = min(max(int(rank), 0), int(chunk_size))
+    if local_rank <= 0:
+        return torch.empty(*x.shape[:-2], 0, x.shape[-1], device=x.device, dtype=x.dtype)
+    coefficients = _chunked_basis_coefficients(kind, chunk_size, local_rank, x.device, x.dtype)
+    if x.is_cuda and x.ndim == 3 and not _triton_disabled():
+        try:
+            from lowpass_triton import chunked_project
+
+            return chunked_project(x, coefficients, chunk_size=chunk_size)
+        except Exception:
+            pass
+    chunk_count = x.shape[-2] // chunk_size
+    x_chunks = x.reshape(*x.shape[:-2], chunk_count, chunk_size, x.shape[-1])
+    projected = torch.einsum("rl,...klc->...krc", coefficients, x_chunks)
+    return projected.reshape(*x.shape[:-2], chunk_count * local_rank, x.shape[-1])
+
+
+def _unproject_chunked_fixed_token_basis(
+    kind: str,
+    x_hat: Tensor,
+    *,
+    seq_len: int,
+    rank: int,
+    chunk_size: int,
+) -> Tensor:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if seq_len % chunk_size != 0:
+        raise ValueError(f"sequence length {seq_len} is not divisible by chunk_size {chunk_size}")
+    chunk_count = seq_len // chunk_size
+    local_rank = min(max(int(rank), 0), int(chunk_size))
+    if local_rank <= 0:
+        return torch.empty(*x_hat.shape[:-2], seq_len, x_hat.shape[-1], device=x_hat.device, dtype=x_hat.dtype)
+    if x_hat.shape[-2] != chunk_count * local_rank:
+        raise ValueError(
+            f"chunked projection rank mismatch: got {x_hat.shape[-2]}, expected {chunk_count * local_rank}"
+        )
+    coefficients = _chunked_basis_coefficients(kind, chunk_size, local_rank, x_hat.device, x_hat.dtype)
+    x_hat_chunks = x_hat.reshape(*x_hat.shape[:-2], chunk_count, local_rank, x_hat.shape[-1])
+    restored = torch.einsum("rl,...krc->...klc", coefficients, x_hat_chunks)
+    return restored.reshape(*x_hat.shape[:-2], seq_len, x_hat.shape[-1])
+
+
+def _project_fixed_token_basis(kind: str, x: Tensor, rank: int, chunk_size: int = 0) -> Tensor:
+    if chunk_size > 0:
+        return _project_chunked_fixed_token_basis(kind, x, rank, chunk_size)
     if x.is_cuda and x.ndim == 3 and kind in {"hadamard", "haar"} and not _triton_disabled():
         try:
             from lowpass_triton import piecewise_project
@@ -395,6 +464,22 @@ def _project_fixed_token_basis(kind: str, x: Tensor, rank: int) -> Tensor:
             pass
     projector = _fixed_projector(kind, x.shape[-2], rank, x.device, x.dtype)
     return torch.einsum("rl,...lc->...rc", projector, x)
+
+
+def _unproject_fixed_token_basis(
+    kind: str,
+    x_hat: Tensor,
+    *,
+    seq_len: int,
+    rank: int,
+    chunk_size: int = 0,
+) -> Tensor:
+    if chunk_size > 0:
+        return _unproject_chunked_fixed_token_basis(
+            kind, x_hat, seq_len=seq_len, rank=rank, chunk_size=chunk_size
+        )
+    projector = _fixed_projector(kind, seq_len, rank, x_hat.device, x_hat.dtype)
+    return torch.einsum("rl,...ri->...li", projector, x_hat)
 
 
 def _piecewise_segment_count(kind: str, seq_len: int, rank: int) -> int | None:
@@ -425,7 +510,23 @@ def _piecewise_projector_coefficients(
     return coefficients, segment_len
 
 
-def _project_fixed_token_basis_quantized(kind: str, x: Tensor, rank: int) -> tuple[Tensor, Tensor]:
+def _project_fixed_token_basis_quantized(
+    kind: str, x: Tensor, rank: int, chunk_size: int = 0
+) -> tuple[Tensor, Tensor]:
+    if chunk_size > 0:
+        if x.shape[-2] % chunk_size != 0:
+            raise ValueError(f"sequence length {x.shape[-2]} is not divisible by chunk_size {chunk_size}")
+        local_rank = min(max(int(rank), 0), int(chunk_size))
+        coefficients = _chunked_basis_coefficients(kind, chunk_size, local_rank, x.device, x.dtype)
+        if x.is_cuda and x.ndim == 3 and not _triton_disabled():
+            try:
+                from lowpass_triton import chunked_project_quantize_int8
+
+                return chunked_project_quantize_int8(x, coefficients, chunk_size=chunk_size)
+            except Exception:
+                pass
+        x_hat = _project_chunked_fixed_token_basis(kind, x, local_rank, chunk_size)
+        return _quantize_symmetric_int8(x_hat)
     if x.is_cuda and x.ndim == 3 and kind in {"hadamard", "haar"} and not _triton_disabled():
         try:
             from lowpass_triton import piecewise_project_quantize_int8
@@ -539,15 +640,19 @@ class _LowpassLinearFunction(torch.autograd.Function):
         compress_gradients: bool,
         activation_storage: str,
         projector_kind: str,
+        chunk_size: int,
     ) -> Tensor:
         needs_gradient_projector = compress_gradients
         y = F.linear(x, weight, bias)
         use_fixed_projector = projector_kind != "svd"
+        chunk_size = int(chunk_size)
         if (
             not use_lowpass
             or x.ndim < 3
             or activation_rank <= 0
             or (needs_gradient_projector and gradient_rank <= 0)
+            or (chunk_size > 0 and (not use_fixed_projector or projector_kind != "dct"))
+            or (chunk_size > 0 and int(x.shape[-2]) % chunk_size != 0)
             or (
                 not use_fixed_projector
                 and (
@@ -573,8 +678,13 @@ class _LowpassLinearFunction(torch.autograd.Function):
         ctx.compress_gradients = compress_gradients
         ctx.activation_storage = activation_storage
         ctx.projector_kind = projector_kind
+        ctx.chunk_size = chunk_size
+        ctx.seq_len = int(x.shape[-2])
         ctx.activation_rank = int(min(activation_rank, x.shape[-2]))
         ctx.gradient_rank = int(min(gradient_rank, x.shape[-2])) if gradient_rank > 0 else 0
+        if chunk_size > 0:
+            ctx.activation_rank = int(min(ctx.activation_rank, chunk_size))
+            ctx.gradient_rank = int(min(ctx.gradient_rank, chunk_size)) if ctx.gradient_rank > 0 else 0
         p: Tensor | None = None
         q: Tensor | None = None
         if not use_fixed_projector:
@@ -586,6 +696,7 @@ class _LowpassLinearFunction(torch.autograd.Function):
                     projector_kind,
                     x.to(work_dtype),
                     ctx.activation_rank,
+                    chunk_size,
                 )
             else:
                 x_hat_q, x_hat_scale = _project_quantize_symmetric_int8(p, x.to(work_dtype))
@@ -600,7 +711,9 @@ class _LowpassLinearFunction(torch.autograd.Function):
                 ctx.save_for_backward(*saved_tensors)
         else:
             if use_fixed_projector:
-                x_hat = _project_fixed_token_basis(projector_kind, x.to(work_dtype), ctx.activation_rank)
+                x_hat = _project_fixed_token_basis(
+                    projector_kind, x.to(work_dtype), ctx.activation_rank, chunk_size
+                )
             else:
                 x_hat = torch.einsum("rl,...lc->...rc", p, x.to(work_dtype))
             if compress_gradients and not use_fixed_projector:
@@ -624,7 +737,7 @@ class _LowpassLinearFunction(torch.autograd.Function):
             if ctx.has_bias and ctx.needs_input_grad[2]:
                 reduce_dims = tuple(range(grad_output.ndim - 1))
                 grad_bias = grad_output.sum(dim=reduce_dims)
-            return grad_x, grad_weight, grad_bias, None, None, None, None, None, None, None, None, None
+            return grad_x, grad_weight, grad_bias, None, None, None, None, None, None, None, None, None, None
 
         use_fixed_projector = ctx.projector_kind != "svd"
         if ctx.activation_storage == "int8":
@@ -649,7 +762,9 @@ class _LowpassLinearFunction(torch.autograd.Function):
 
         if ctx.needs_input_grad[1]:
             if use_fixed_projector:
-                go_for_w = _project_fixed_token_basis(ctx.projector_kind, go, ctx.activation_rank)
+                go_for_w = _project_fixed_token_basis(
+                    ctx.projector_kind, go, ctx.activation_rank, ctx.chunk_size
+                )
             else:
                 go_for_w = torch.einsum("rl,...lo->...ro", p, go)
             grad_weight = torch.einsum(
@@ -667,20 +782,28 @@ class _LowpassLinearFunction(torch.autograd.Function):
                         "compressed input gradients require compress_gradients=True"
                     )
                 if use_fixed_projector:
-                    go_hat = _project_fixed_token_basis(ctx.projector_kind, go, ctx.gradient_rank)
-                    q = _fixed_projector(
-                        ctx.projector_kind, go.shape[-2], ctx.gradient_rank, go.device, work_dtype
+                    go_hat = _project_fixed_token_basis(
+                        ctx.projector_kind, go, ctx.gradient_rank, ctx.chunk_size
                     )
                 else:
                     go_hat = torch.einsum("rl,...lo->...ro", q, go)
                 gx_hat = go_hat.matmul(weight.to(work_dtype))
-                grad_x = torch.einsum("rl,...ri->...li", q, gx_hat).to(ctx.input_dtype)
+                if use_fixed_projector:
+                    grad_x = _unproject_fixed_token_basis(
+                        ctx.projector_kind,
+                        gx_hat,
+                        seq_len=ctx.seq_len,
+                        rank=ctx.gradient_rank,
+                        chunk_size=ctx.chunk_size,
+                    ).to(ctx.input_dtype)
+                else:
+                    grad_x = torch.einsum("rl,...ri->...li", q, gx_hat).to(ctx.input_dtype)
 
         if ctx.has_bias and ctx.needs_input_grad[2]:
             reduce_dims = tuple(range(grad_output.ndim - 1))
             grad_bias = grad_output.sum(dim=reduce_dims)
 
-        return grad_x, grad_weight, grad_bias, None, None, None, None, None, None, None, None, None
+        return grad_x, grad_weight, grad_bias, None, None, None, None, None, None, None, None, None, None
 
 
 class LowpassLinear(torch.nn.Module):
@@ -738,12 +861,14 @@ class LowpassLinear(torch.nn.Module):
 
     def _rank_for_sequence_length(self, seq_len: int, *, gradient: bool = False) -> int:
         configured = self.gradient_transform_rank if gradient else self.activation_transform_rank
+        rank_limit = self.config.chunk_size if self.config.chunk_size > 0 else seq_len
         if configured > 0:
-            return min(configured, seq_len)
-        return _effective_max_rank_for_dimension(seq_len, seq_len, self.config)
+            return min(configured, rank_limit)
+        return _effective_max_rank_for_dimension(rank_limit, rank_limit, self.config)
 
     def forward(self, x: Tensor) -> Tensor:
         use_fixed_projector = self.config.projector_kind != "svd"
+        chunk_size = int(self.config.chunk_size)
         activation_rank = self._rank_for_sequence_length(x.shape[-2]) if x.ndim >= 3 else 0
         gradient_rank = (
             self._rank_for_sequence_length(x.shape[-2], gradient=True)
@@ -756,6 +881,7 @@ class LowpassLinear(torch.nn.Module):
             and self.has_projectors
             and x.ndim >= 3
             and activation_rank > 0
+            and (chunk_size <= 0 or int(x.shape[-2]) % chunk_size == 0)
             and (
                 use_fixed_projector
                 or (
@@ -790,6 +916,7 @@ class LowpassLinear(torch.nn.Module):
             self.config.compress_gradients,
             self.config.activation_storage,
             self.config.projector_kind,
+            chunk_size,
         )
 
 
