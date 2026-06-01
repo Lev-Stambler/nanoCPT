@@ -1,0 +1,21 @@
+Track 2 (5min)
+Description: SIDE Track2 v3 hard-typo2 LOWPASS int8 chunkDCT r48x64 matmulProj matmulGrad allnolm exactGrad noCkpt mb5 seq2048 lr1.48e-5
+Contributors: 
+Date: 2026-06-01
+Data mode: cpt
+Loss mask: all_tokens
+Eval mode: leading_docs
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 5.0
+Eval loss drop: 0.223188
+Baseline eval loss: 1.365540
+Final eval loss: 1.142352
+Steps: 408
+Tokens: 4,177,920
+Supervised tokens: 4,143,313
+Eval supervised tokens: 129,801
+Compile + warmup (untimed): 254.2s
+Elapsed budget: 300.1s
+Budget tokens/sec: 13924
+Train-loop elapsed: 300.1s
+Train-loop tokens/sec: 13924
