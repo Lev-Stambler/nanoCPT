@@ -316,7 +316,6 @@ image = (
         "git+https://github.com/huggingface/transformers.git",
         extra_options="--no-build-isolation",
     )
-    .add_local_python_source("lowpass", "lowpass_triton")
 )
 
 
