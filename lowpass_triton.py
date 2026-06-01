@@ -293,6 +293,47 @@ def is_available() -> bool:
     return torch.cuda.is_available()
 
 
+def _chunked_project_torch(
+    x_work: torch.Tensor,
+    coeff_work: torch.Tensor,
+    *,
+    chunk_size: int,
+) -> torch.Tensor:
+    n_items, seq_len, channels = x_work.shape
+    rank = coeff_work.shape[0]
+    chunk_count = seq_len // chunk_size
+    x_chunks = x_work.reshape(n_items, chunk_count, chunk_size, channels)
+    projected_flat = x_chunks.transpose(-2, -1).reshape(-1, chunk_size).matmul(coeff_work.T)
+    projected = projected_flat.reshape(n_items, chunk_count, channels, rank).transpose(-2, -1)
+    return projected.reshape(n_items, chunk_count * rank, channels).contiguous()
+
+
+def _quantize_int8_channel_blocks(
+    x_hat: torch.Tensor,
+    *,
+    block_channels: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    n_items, rank, channels = x_hat.shape
+    num_channel_blocks = triton.cdiv(channels, block_channels)
+    padded_channels = num_channel_blocks * block_channels
+    x_float = x_hat.float()
+    if padded_channels != channels:
+        x_padded = torch.empty(
+            (n_items, rank, padded_channels),
+            device=x_hat.device,
+            dtype=torch.float32,
+        )
+        x_padded[..., :channels] = x_float
+        x_padded[..., channels:] = 0.0
+    else:
+        x_padded = x_float
+    blocks = x_padded.reshape(n_items, rank, num_channel_blocks, block_channels)
+    scales = blocks.abs().amax(dim=-1).div(127.0).clamp_min(torch.finfo(torch.float32).tiny)
+    q_blocks = blocks.div(scales.unsqueeze(-1)).round().clamp(-127, 127).to(torch.int8)
+    q = q_blocks.reshape(n_items, rank, padded_channels)[..., :channels].contiguous()
+    return q, scales.contiguous()
+
+
 def project_quantize_int8(
     x: torch.Tensor,
     projector: torch.Tensor,
@@ -462,10 +503,10 @@ def chunked_project(
     chunk_count = seq_len // chunk_size
     total_rank = chunk_count * rank
     block_channels = max(16, int(block_channels))
+    if rank % 16 != 0:
+        return _chunked_project_torch(x_work, coeff_work, chunk_size=chunk_size)
     out = torch.empty((n_items, total_rank, channels), device=x.device, dtype=x.dtype)
     block_r = 16
-    while block_r > 1 and rank % block_r != 0:
-        block_r //= 2
     grid = (n_items, triton.cdiv(total_rank, block_r), triton.cdiv(channels, block_channels))
     _chunked_project_kernel[grid](
         x_work,
@@ -516,11 +557,12 @@ def chunked_project_quantize_int8(
     total_rank = chunk_count * rank
     block_channels = max(16, int(block_channels))
     num_channel_blocks = triton.cdiv(channels, block_channels)
+    if rank % 16 != 0:
+        projected = _chunked_project_torch(x_work, coeff_work, chunk_size=chunk_size)
+        return _quantize_int8_channel_blocks(projected, block_channels=block_channels)
     q = torch.empty((n_items, total_rank, channels), device=x.device, dtype=torch.int8)
     scales = torch.empty((n_items, total_rank, num_channel_blocks), device=x.device, dtype=torch.float32)
     block_r = 16
-    while block_r > 1 and rank % block_r != 0:
-        block_r //= 2
     grid = (n_items, triton.cdiv(total_rank, block_r), num_channel_blocks)
     _chunked_project_quantize_int8_kernel[grid](
         x_work,
