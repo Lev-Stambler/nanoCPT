@@ -1,0 +1,21 @@
+Track 2 (5min)
+Description: Track2 v3 hard-typo2 baseline adamw8bit noCkpt mb4 seq2048 lr2e-5
+Contributors: 
+Date: 2026-06-01
+Data mode: cpt
+Loss mask: all_tokens
+Eval mode: leading_docs
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 5.0
+Eval loss drop: 0.820780
+Baseline eval loss: 1.372968
+Final eval loss: 0.552188
+Steps: 486
+Tokens: 3,981,312
+Supervised tokens: 3,979,368
+Eval supervised tokens: 131,072
+Compile + warmup (untimed): 287.9s
+Elapsed budget: 300.6s
+Budget tokens/sec: 13244
+Train-loop elapsed: 300.6s
+Train-loop tokens/sec: 13244

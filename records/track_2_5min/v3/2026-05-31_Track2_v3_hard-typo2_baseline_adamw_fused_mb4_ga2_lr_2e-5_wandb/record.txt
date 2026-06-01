@@ -1,0 +1,21 @@
+Track 2 (5min)
+Description: Track2 v3 hard-typo2 baseline adamw_fused mb4 ga2 lr=2e-5 wandb
+Contributors: 
+Date: 2026-05-31
+Data mode: cpt
+Loss mask: all_tokens
+Eval mode: leading_docs
+Sequence packing: True (stream_concat_no_padding)
+Minutes: 5.0
+Eval loss drop: 0.706097
+Baseline eval loss: 1.242502
+Final eval loss: 0.536405
+Steps: 115
+Tokens: 3,768,320
+Supervised tokens: 3,767,400
+Eval supervised tokens: 262,144
+Compile + warmup (untimed): 252.8s
+Elapsed budget: 301.6s
+Budget tokens/sec: 12496
+Train-loop elapsed: 301.6s
+Train-loop tokens/sec: 12496
